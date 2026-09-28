@@ -306,10 +306,18 @@ def only_redactions(text: str) -> bool:
     return REDACTION_TOKEN.sub("", text).strip() == ""
 
 
+def prompt_reason(text: str) -> str | None:
+    if PROMPT_LINE.search(text):
+        return "It opens like an instruction to an agent."
+    if ROLE_LINE.search(text):
+        return "It names a system, user, or assistant role."
+    if len(text) >= 280 and len(INSTRUCTION_WORDS.findall(text)) >= 2:
+        return "It is long and written as directions."
+    return None
+
+
 def looks_like_prompt(text: str) -> bool:
-    if PROMPT_LINE.search(text) or ROLE_LINE.search(text):
-        return True
-    return len(text) >= 280 and len(INSTRUCTION_WORDS.findall(text)) >= 2
+    return prompt_reason(text) is not None
 
 
 def looks_like_code(text: str) -> bool:
@@ -482,6 +490,7 @@ def ingest(
     files: list[str] | None = None,
     has_image: bool = False,
     device: str | None = None,
+    html_bytes: bytes | None = None,
 ) -> dict | None:
     files = files or []
     raw = (text or "").replace("\x00", "")
@@ -554,6 +563,11 @@ def ingest(
         extra["image"] = True
     if files and kind != "files":
         extra["files"] = files[:20]
+    reason = prompt_reason(body or "") if kind == "prompt" and body else None
+    if reason:
+        extra["reason"] = reason
+    if html_bytes and kind not in {"secret", "image"} and len(html_bytes) <= 120_000:
+        extra["html_b64"] = __import__("base64").b64encode(html_bytes).decode("ascii")
 
     captured_at = utc_now()
     device_name = clip_device(app, device)
@@ -763,14 +777,22 @@ def read_clipboard() -> dict | None:
         has_image = bool(
             user32.IsClipboardFormatAvailable(CF_DIB) or user32.IsClipboardFormatAvailable(CF_DIBV5)
         )
+        html_bytes = None
+        html_format = user32.RegisterClipboardFormatW("HTML Format")
+        if html_format and user32.IsClipboardFormatAvailable(html_format):
+            handle = user32.GetClipboardData(html_format)
+            if handle:
+                raw_html = read_global_bytes(handle)
+                if raw_html and len(raw_html) <= 120_000:
+                    html_bytes = raw_html.split(b"\x00", 1)[0]
         owner = user32.GetClipboardOwner()
         app, title = window_source(int(owner) if owner else 0)
-        return {"text": text, "files": files, "has_image": has_image, "app": app, "title": title}
+        return {"text": text, "files": files, "has_image": has_image, "app": app, "title": title, "html": html_bytes}
     finally:
         user32.CloseClipboard()
 
 
-def set_clipboard_text(text: str) -> None:
+def set_clipboard_text(text: str, html_bytes: bytes | None = None) -> None:
     encoded = (text + "\0").encode("utf-16-le")
     handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(encoded))
     if not handle:
@@ -796,23 +818,42 @@ def set_clipboard_text(text: str) -> None:
         if not user32.SetClipboardData(CF_UNICODETEXT, handle):
             raise OSError("clipboard set failed")
         handle = None
+        html_handle = None
+        if html_bytes:
+            html_format = user32.RegisterClipboardFormatW("HTML Format")
+            payload = html_bytes if html_bytes.endswith(b"\x00") else html_bytes + b"\x00"
+            html_handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(payload))
+            if html_handle:
+                html_pointer = kernel32.GlobalLock(html_handle)
+                if html_pointer:
+                    ctypes.memmove(html_pointer, payload, len(payload))
+                    kernel32.GlobalUnlock(html_handle)
+                    if user32.SetClipboardData(html_format, html_handle):
+                        html_handle = None
+        if html_handle:
+            kernel32.GlobalFree(html_handle)
     finally:
         user32.CloseClipboard()
         if handle:
             kernel32.GlobalFree(handle)
 
 
-def capture_once() -> dict | None:
+def capture_once(fallback_app: str = "", fallback_title: str = "") -> dict | None:
     snapshot = read_clipboard()
     if snapshot is None:
         log("capture skipped: clipboard busy")
         return None
+    app = snapshot["app"] or fallback_app
+    title = snapshot["title"] or fallback_title
+    if app.lower() in {"python.exe", "pythonw.exe"}:
+        app, title = fallback_app, fallback_title
     result = ingest(
         snapshot["text"],
-        app=snapshot["app"],
-        title=snapshot["title"],
+        app=app,
+        title=title,
         files=snapshot["files"],
         has_image=snapshot["has_image"],
+        html_bytes=snapshot.get("html"),
     )
     if result and not result.get("duplicate"):
         log(
@@ -1077,8 +1118,16 @@ def copy_back(clip_id: int) -> int:
     digest = hashlib.sha256(row["body"].encode("utf-8")).hexdigest()
     paths()["data"].mkdir(parents=True, exist_ok=True)
     paths()["suppress"].write_text(digest, encoding="ascii")
+    html_bytes = None
     try:
-        set_clipboard_text(row["body"])
+        extra = json.loads(row["extra_json"] or "{}")
+        encoded = extra.get("html_b64")
+        if encoded:
+            html_bytes = __import__("base64").b64decode(encoded)
+    except (json.JSONDecodeError, ValueError):
+        html_bytes = None
+    try:
+        set_clipboard_text(row["body"], html_bytes)
     except OSError:
         paths()["suppress"].unlink(missing_ok=True)
         emit("Clipboard is busy.")
@@ -1538,8 +1587,14 @@ def board_items(query: str) -> dict:
                 "pinned": int(row["pinned"] or 0),
                 "book": find_fabric_entry(int(row["id"])) is not None,
                 "stored": bool(body),
+                "reason": "",
             }
         )
+        try:
+            extra = json.loads(row["extra_json"] or "{}")
+            items[-1]["reason"] = str(extra.get("reason") or "")
+        except json.JSONDecodeError:
+            pass
     return {"device": this_device(), "devices": devices, "items": items}
 
 
@@ -1860,8 +1915,12 @@ def pump_hotkey(hwnd: int) -> None:
     message = Msg()
     while user32.PeekMessageW(ctypes.byref(message), None, 0, 0, 1):
         if message.message == 0x031D:
+            foreground = int(user32.GetForegroundWindow() or 0)
+            fallback_app, fallback_title = ("", "")
+            if foreground and foreground != int(PANEL.get("hwnd") or 0):
+                fallback_app, fallback_title = window_source(foreground)
             try:
-                capture_once()
+                capture_once(fallback_app, fallback_title)
             except Exception:
                 log("capture failed")
             continue

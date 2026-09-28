@@ -139,6 +139,7 @@
     <span><kbd>Ctrl</kbd> <kbd>Enter</kbd> Save to book</span>
     <span><kbd>Esc</kbd> Hide</span>
     <span><kbd>1</kbd>–<kbd>9</kbd> Paste</span>
+    <span>Win+V is Windows history</span>
   </div>
 </div>
 <script>
@@ -189,7 +190,8 @@ function renderPreview() {
   const kind = document.createElement("div");
   kind.className = "preview-kind";
   const bits = [labels[item.kind] || "Text", item.app, item.device].filter(Boolean);
-  if (item.kind === "prompt") bits.push("Instructions for an agent");
+  if (item.reason) bits.push(item.reason);
+  else if (item.kind === "prompt") bits.push("Instructions for an agent");
   if (item.book) bits.push("In the Starlight book");
   if (item.pinned) bits.push("Pinned");
   kind.textContent = bits.join("  ·  ");
