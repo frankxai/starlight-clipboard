@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Starlight Clipboard</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #09090b;
+    --ink: #fafafa;
+    --muted: #a1a1aa;
+    --line: #27272a;
+    --select: #27272a;
+    --mark: #fafafa;
+    --code: #b7c7b0;
+    --link: #b7c3cc;
+    --secret: #c9a39a;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink); }
+  body {
+    font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif;
+    font-size: 14px;
+    line-height: 1.35;
+    overflow: hidden;
+  }
+  .shell { height: 100%; display: flex; flex-direction: column; }
+  .search {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 16px 18px 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  .search input {
+    flex: 1;
+    border: 0;
+    outline: none;
+    background: transparent;
+    color: var(--ink);
+    font: inherit;
+    font-size: 16px;
+    letter-spacing: -0.015em;
+    caret-color: var(--mark);
+  }
+  .search input::placeholder { color: #6f6a62; }
+  .device { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .stage { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.2fr 0.8fr; }
+  .list { overflow: auto; min-height: 0; }
+  .row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 4px 16px;
+    padding: 10px 18px 11px;
+    cursor: default;
+  }
+  .row[aria-selected="true"] {
+    background: var(--select);
+    box-shadow: inset 2px 0 0 var(--mark);
+  }
+  .line { display: flex; gap: 8px; min-width: 0; align-items: baseline; }
+  .kind { flex: none; font-size: 12px; color: var(--muted); }
+  .kind[data-kind="prompt"] { color: var(--mark); }
+  .kind[data-kind="code"] { color: var(--code); }
+  .kind[data-kind="url"] { color: var(--link); }
+  .kind[data-kind="secret"] { color: var(--secret); }
+  .text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .pin { color: var(--mark); }
+  .preview {
+    border-left: 1px solid var(--line);
+    overflow: auto;
+    padding: 16px 18px 18px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  }
+  .preview[data-code="true"] {
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+  .preview-kind { color: var(--muted); font-size: 12px; margin-bottom: 10px; font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif; }
+  .empty { color: var(--muted); padding: 22px 18px; }
+  .bar {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    padding: 10px 16px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 12px;
+  }
+  kbd {
+    font-family: inherit;
+    font-size: 11px;
+    border: 1px solid #3a362f;
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 1px 5px;
+    color: #d9d3c7;
+  }
+  .list::-webkit-scrollbar, .preview::-webkit-scrollbar { width: 10px; }
+  .list::-webkit-scrollbar-thumb, .preview::-webkit-scrollbar-thumb {
+    background: #3a362f;
+    border-radius: 99px;
+    border: 2px solid var(--bg);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { scroll-behavior: auto; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="search">
+    <input id="q" type="text" placeholder="Search copies, or type > for commands" autocomplete="off" spellcheck="false" aria-label="Search copies">
+    <div class="device" id="device"></div>
+  </div>
+  <div class="stage">
+    <div class="list" id="list" role="listbox" aria-label="Clipboard"></div>
+    <div class="preview" id="preview"></div>
+  </div>
+  <div class="bar" id="bar">
+    <span><kbd>Enter</kbd> Paste</span>
+    <span><kbd>Ctrl</kbd> <kbd>P</kbd> Pin</span>
+    <span><kbd>Ctrl</kbd> <kbd>Enter</kbd> Save to book</span>
+    <span><kbd>Esc</kbd> Hide</span>
+    <span><kbd>1</kbd>–<kbd>9</kbd> Paste</span>
+  </div>
+</div>
+<script>
+const token = "__TOKEN__";
+const input = document.getElementById("q");
+const list = document.getElementById("list");
+const preview = document.getElementById("preview");
+const deviceEl = document.getElementById("device");
+const labels = { prompt: "Prompt", code: "Code", url: "Link", path: "Path", command: "Command", files: "Files", image: "Image", secret: "Secret", text: "Text" };
+const commands = [
+  { id: "cmd-prompts", kind: "command", preview: "Show saved prompts", detail: "A prompt is text that tells an agent what to do. These are the copies already marked that way.", command: "prompts" },
+  { id: "cmd-pinned", kind: "command", preview: "Show pinned copies", detail: "Pinned copies stay when old history is pruned.", command: "pinned" },
+  { id: "cmd-book", kind: "command", preview: "Save the selected copy to the Starlight prompt book", detail: "Writes a private entry under the Starlight prompt fabric. It does not push to GitHub and it does not become Arcanea canon.", command: "book" },
+];
+let items = [];
+let copies = [];
+let selected = 0;
+let timer = 0;
+let view = "all";
+
+function ago(iso) {
+  const then = Date.parse(iso);
+  if (!then) return "";
+  const minutes = Math.round((Date.now() - then) / 60000);
+  if (minutes < 1) return "now";
+  if (minutes < 60) return minutes + "m";
+  const hours = Math.round(minutes / 60);
+  if (hours < 36) return hours + "h";
+  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(then);
+}
+
+function current() {
+  return items[selected] || null;
+}
+
+function renderPreview() {
+  const item = current();
+  preview.dataset.code = item && (item.kind === "code" || item.kind === "command") ? "true" : "false";
+  if (!item) {
+    preview.innerHTML = '<div class="empty">Type &gt; for commands. Prompts you keep stay in the Starlight prompt book on this PC. A second machine gets the tool from GitHub and keeps its own copies.</div>';
+    return;
+  }
+  if (item.command) {
+    preview.dataset.code = "false";
+    preview.textContent = item.detail;
+    return;
+  }
+  const kind = document.createElement("div");
+  kind.className = "preview-kind";
+  const bits = [labels[item.kind] || "Text", item.app, item.device].filter(Boolean);
+  if (item.kind === "prompt") bits.push("Instructions for an agent");
+  if (item.book) bits.push("In the Starlight book");
+  if (item.pinned) bits.push("Pinned");
+  kind.textContent = bits.join("  ·  ");
+  const body = document.createElement("div");
+  body.textContent = item.stored ? item.body : "The value was not stored.";
+  preview.replaceChildren(kind, body);
+}
+
+function render() {
+  list.replaceChildren();
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = input.value.trim() ? "No copies matched." : "Nothing copied yet.";
+    list.append(empty);
+    renderPreview();
+    return;
+  }
+  items.forEach((item, index) => {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.setAttribute("role", "option");
+    row.setAttribute("aria-selected", index === selected ? "true" : "false");
+    const line = document.createElement("div");
+    line.className = "line";
+    const kind = document.createElement("span");
+    kind.className = "kind";
+    kind.dataset.kind = item.kind;
+    kind.textContent = index < 9 ? (index + 1) + "  " + (labels[item.kind] || "Text") : (labels[item.kind] || "Text");
+    const text = document.createElement("span");
+    text.className = "text";
+    text.textContent = item.preview || "Empty copy";
+    line.append(kind, text);
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    const parts = [];
+    if (item.pinned) parts.push("Pinned");
+    parts.push(ago(item.captured_at));
+    if (item.app) parts.push(item.app);
+    if (item.device && item.device !== deviceEl.dataset.home) parts.push(item.device);
+    meta.textContent = parts.join("  ·  ");
+    row.append(line, meta);
+    row.addEventListener("mouseenter", () => { if (selected !== index) { selected = index; paint(); } });
+    row.addEventListener("dblclick", () => paste());
+    list.append(row);
+  });
+  const active = list.querySelector('[aria-selected="true"]');
+  if (active) active.scrollIntoView({ block: "nearest" });
+  renderPreview();
+}
+
+function paint() {
+  const rows = list.querySelectorAll(".row");
+  if (rows.length !== items.length) { render(); return; }
+  rows.forEach((row, index) => row.setAttribute("aria-selected", index === selected ? "true" : "false"));
+  const active = list.querySelector('[aria-selected="true"]');
+  if (active) active.scrollIntoView({ block: "nearest" });
+  renderPreview();
+}
+
+function visibleCopies() {
+  if (view === "prompts") return copies.filter((item) => item.kind === "prompt");
+  if (view === "pinned") return copies.filter((item) => item.pinned);
+  return copies;
+}
+
+function applyView() {
+  const raw = input.value.trim();
+  const typed = raw.startsWith(">") ? commands.filter((item) => item.preview.toLowerCase().includes(raw.slice(1).trim().toLowerCase())) : [];
+  const shown = raw.startsWith(">") ? typed : (raw ? [] : commands).concat(visibleCopies());
+  items = raw.startsWith(">") || !raw ? shown : visibleCopies();
+  if (raw && !raw.startsWith(">")) items = copies;
+}
+
+async function load() {
+  const raw = input.value.trim();
+  if (raw.startsWith(">")) {
+    applyView();
+    selected = 0;
+    render();
+    return;
+  }
+  const response = await fetch("/api/items?k=" + encodeURIComponent(token) + "&q=" + encodeURIComponent(raw));
+  const data = await response.json();
+  copies = data.items || [];
+  deviceEl.dataset.home = data.device || "";
+  deviceEl.textContent = "Starlight";
+  applyView();
+  selected = 0;
+  render();
+}
+
+async function post(path, extra, id) {
+  const itemId = id || (current() && current().id);
+  if (!itemId || String(itemId).startsWith("cmd-")) return null;
+  const response = await fetch(path + "?k=" + encodeURIComponent(token), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(Object.assign({ id: itemId }, extra || {})),
+  });
+  return response.json();
+}
+
+function runCommand(item) {
+  if (item.command === "prompts") { view = "prompts"; input.value = ""; load(); }
+  if (item.command === "pinned") { view = "pinned"; input.value = ""; load(); }
+  if (item.command === "book") book();
+}
+
+async function paste() {
+  const item = current();
+  if (item && item.command) { runCommand(item); return; }
+  if (!item || !item.stored) return;
+  const result = await post("/api/paste");
+  if (result && result.ok) window.close();
+}
+
+async function pin() {
+  const item = current();
+  if (!item || item.command) return;
+  await post("/api/pin", { pinned: item.pinned ? 0 : 1 });
+  await load();
+}
+
+async function book() {
+  const selectedItem = current();
+  const item = selectedItem && selectedItem.stored ? selectedItem : copies.find((row) => row.stored);
+  if (!item || !item.stored) return;
+  await post("/api/book", { scope: "starlight" }, item.id);
+  await load();
+}
+
+function closePanel() {
+  fetch("/api/hide?k=" + encodeURIComponent(token));
+}
+
+async function removeItem() {
+  const item = current();
+  if (!item || item.command) return;
+  await post("/api/delete");
+  await load();
+}
+
+input.addEventListener("input", () => {
+  clearTimeout(timer);
+  timer = setTimeout(load, 50);
+});
+window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") { event.preventDefault(); closePanel(); return; }
+  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); book(); return; }
+  if (event.key === "Enter") { event.preventDefault(); paste(); return; }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "p") { event.preventDefault(); pin(); return; }
+  if (event.ctrlKey && event.key === "Backspace") { event.preventDefault(); removeItem(); return; }
+  if (!input.value && event.key >= "1" && event.key <= "9") {
+    const index = Number(event.key) - 1;
+    if (items[index]) { event.preventDefault(); selected = index; paste(); return; }
+  }
+  if (event.key === "ArrowDown" && items.length) { event.preventDefault(); selected = Math.min(items.length - 1, selected + 1); paint(); }
+  if (event.key === "ArrowUp" && items.length) { event.preventDefault(); selected = Math.max(0, selected - 1); paint(); }
+});
+window.addEventListener("focus", () => { input.focus(); load(); });
+load();
+input.focus();
+</script>
+</body>
+</html>
