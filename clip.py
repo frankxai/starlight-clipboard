@@ -491,6 +491,7 @@ def ingest(
     has_image: bool = False,
     device: str | None = None,
     html_bytes: bytes | None = None,
+    png_bytes: bytes | None = None,
 ) -> dict | None:
     files = files or []
     raw = (text or "").replace("\x00", "")
@@ -627,6 +628,16 @@ def ingest(
             sidecar = write_sidecar(kind, clip_id, captured_at, app, title, body, labels)
         if sidecar:
             conn.execute("UPDATE clips SET sidecar = ? WHERE id = ?", (sidecar, clip_id))
+        if png_bytes and kind != "secret":
+            image_dir = paths()["data"] / "images"
+            image_dir.mkdir(parents=True, exist_ok=True)
+            image_path = image_dir / f"{clip_id}.png"
+            image_path.write_bytes(png_bytes)
+            extra["image"] = str(image_path)
+            conn.execute(
+                "UPDATE clips SET extra_json = ? WHERE id = ?",
+                (json.dumps(extra, ensure_ascii=False), clip_id),
+            )
         conn.commit()
         try:
             if device_name == this_device() or device_name == "Phone":
@@ -785,9 +796,25 @@ def read_clipboard() -> dict | None:
                 raw_html = read_global_bytes(handle)
                 if raw_html and len(raw_html) <= 120_000:
                     html_bytes = raw_html.split(b"\x00", 1)[0]
+        png_bytes = None
+        png_format = user32.RegisterClipboardFormatW("PNG")
+        if png_format and user32.IsClipboardFormatAvailable(png_format):
+            handle = user32.GetClipboardData(png_format)
+            if handle:
+                raw_png = read_global_bytes(handle)
+                if raw_png and len(raw_png) <= 8_000_000 and raw_png.startswith(b"\x89PNG"):
+                    png_bytes = raw_png.split(b"\x00", 1)[0]
         owner = user32.GetClipboardOwner()
         app, title = window_source(int(owner) if owner else 0)
-        return {"text": text, "files": files, "has_image": has_image, "app": app, "title": title, "html": html_bytes}
+        return {
+            "text": text,
+            "files": files,
+            "has_image": has_image or bool(png_bytes),
+            "app": app,
+            "title": title,
+            "html": html_bytes,
+            "png": png_bytes,
+        }
     finally:
         user32.CloseClipboard()
 
@@ -845,15 +872,18 @@ def capture_once(fallback_app: str = "", fallback_title: str = "") -> dict | Non
         return None
     app = snapshot["app"] or fallback_app
     title = snapshot["title"] or fallback_title
-    if app.lower() in {"python.exe", "pythonw.exe"}:
+    if app.lower() in {"python.exe", "pythonw.exe", "textinputhost.exe"}:
         app, title = fallback_app, fallback_title
+        if app.lower() in {"python.exe", "pythonw.exe", "textinputhost.exe"}:
+            app, title = "", ""
     result = ingest(
         snapshot["text"],
         app=app,
         title=title,
         files=snapshot["files"],
-        has_image=snapshot["has_image"],
+        has_image=snapshot["has_image"] or bool(snapshot.get("png")),
         html_bytes=snapshot.get("html"),
+        png_bytes=snapshot.get("png"),
     )
     if result and not result.get("duplicate"):
         log(
@@ -911,6 +941,13 @@ def watch() -> int:
     start_panel_server()
     while True:
         pump_hotkey(hot_hwnd)
+        pending = PANEL.get("pending_clip")
+        if pending and time.monotonic() >= pending[0]:
+            PANEL["pending_clip"] = None
+            try:
+                capture_once(pending[1], pending[2])
+            except Exception:
+                log("capture failed")
         if stop.exists():
             stop.unlink(missing_ok=True)
             log("stopped")
@@ -1588,13 +1625,15 @@ def board_items(query: str) -> dict:
                 "book": find_fabric_entry(int(row["id"])) is not None,
                 "stored": bool(body),
                 "reason": "",
+                "image": False,
             }
         )
         try:
             extra = json.loads(row["extra_json"] or "{}")
             items[-1]["reason"] = str(extra.get("reason") or "")
+            items[-1]["image"] = bool(extra.get("image")) or row["kind"] == "image"
         except json.JSONDecodeError:
-            pass
+            items[-1]["image"] = row["kind"] == "image"
     return {"device": this_device(), "devices": devices, "items": items}
 
 
@@ -1740,6 +1779,19 @@ def start_panel_server() -> None:
             if path in ("/", "/index.html"):
                 page = Path(__file__).with_name("board.html").read_text(encoding="utf-8")
                 self._send(200, page.replace("__TOKEN__", PANEL["token"]).encode("utf-8"), "text/html; charset=utf-8")
+                return
+            if path == "/api/image":
+                try:
+                    clip_id = int((query.get("id") or ["0"])[0])
+                except ValueError:
+                    self.send_error(404)
+                    return
+                image = paths()["data"] / "images" / f"{clip_id}.png"
+                if not image.is_file():
+                    self.send_error(404)
+                    return
+                payload = image.read_bytes()
+                self._send(200, payload, "image/png")
                 return
             if path == "/api/items":
                 self._json(200, board_items((query.get("q") or [""])[0]))
@@ -1919,10 +1971,7 @@ def pump_hotkey(hwnd: int) -> None:
             fallback_app, fallback_title = ("", "")
             if foreground and foreground != int(PANEL.get("hwnd") or 0):
                 fallback_app, fallback_title = window_source(foreground)
-            try:
-                capture_once(fallback_app, fallback_title)
-            except Exception:
-                log("capture failed")
+            PANEL["pending_clip"] = (time.monotonic() + 0.4, fallback_app, fallback_title)
             continue
         if message.message == 0x0312:
             target = int(user32.GetForegroundWindow() or 0)
