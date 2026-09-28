@@ -874,6 +874,28 @@ def watch() -> int:
             stop.unlink(missing_ok=True)
             log("stopped")
             return 0
+        if PANEL.get("listen"):
+            time.sleep(0.02)
+            if time.monotonic() - last_peers > 20:
+                try:
+                    import_peers()
+                except Exception:
+                    log("peer import failed")
+                last_peers = time.monotonic()
+            if time.monotonic() - last_prune > 3600:
+                try:
+                    conn = connect()
+                    try:
+                        init_db(conn)
+                        removed = prune(conn)
+                        if removed:
+                            log(f"pruned {removed}")
+                    finally:
+                        conn.close()
+                except Exception:
+                    log("prune failed")
+                last_prune = time.monotonic()
+            continue
         if time.monotonic() - last_clip < POLL_SECONDS:
             time.sleep(0.02)
             continue
@@ -1803,8 +1825,12 @@ def install_hotkey() -> int:
     if not user32.RegisterHotKey(hwnd, 1, 0x0001 | 0x0002 | 0x4000, 0x56):
         log(f"hotkey unavailable ({kernel32.GetLastError()})")
         return int(hwnd)
+    user32.AddClipboardFormatListener.argtypes = [wintypes.HWND]
+    user32.AddClipboardFormatListener.restype = wintypes.BOOL
+    PANEL["listen"] = bool(user32.AddClipboardFormatListener(hwnd))
     PANEL["hotkey"] = int(hwnd)
     log("hotkey ready")
+    log("clipboard listener ready" if PANEL["listen"] else "clipboard listener unavailable")
     return int(hwnd)
 
 
@@ -1833,6 +1859,12 @@ def pump_hotkey(hwnd: int) -> None:
     user32.DispatchMessageW.restype = ctypes.c_ssize_t
     message = Msg()
     while user32.PeekMessageW(ctypes.byref(message), None, 0, 0, 1):
+        if message.message == 0x031D:
+            try:
+                capture_once()
+            except Exception:
+                log("capture failed")
+            continue
         if message.message == 0x0312:
             target = int(user32.GetForegroundWindow() or 0)
             if target and target != int(PANEL["hwnd"] or 0):
