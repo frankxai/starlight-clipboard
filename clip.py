@@ -1540,7 +1540,7 @@ def remember_target(hwnd: int | None = None) -> int:
 def palette_bounds() -> tuple[int, int, int, int]:
     user32.GetSystemMetrics.argtypes = [ctypes.c_int]
     user32.GetSystemMetrics.restype = ctypes.c_int
-    width, height = 760, 520
+    width, height = 880, 560
     screen_w = user32.GetSystemMetrics(0) or 1280
     screen_h = user32.GetSystemMetrics(1) or 800
     return max(0, (screen_w - width) // 2), max(0, int(screen_h * 0.14)), width, height
