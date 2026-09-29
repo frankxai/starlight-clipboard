@@ -44,7 +44,7 @@
     letter-spacing: -0.015em;
     caret-color: var(--mark);
   }
-  .search input::placeholder { color: #6f6a62; }
+  .search input::placeholder { color: #71717a; }
   .device { color: var(--muted); font-size: 12px; white-space: nowrap; }
   .stage { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.2fr 0.8fr; }
   .list { overflow: auto; min-height: 0; }
@@ -64,8 +64,17 @@
     border-radius: 8px;
     cursor: default;
   }
-  .row[aria-selected="true"] { background: #27272a; }
-  .line { display: flex; gap: 10px; min-width: 0; align-items: baseline; }
+  .row[aria-selected="true"] { background: #27272a; box-shadow: inset 2px 0 0 #fafafa; }
+  .line { display: flex; gap: 10px; min-width: 0; align-items: center; }
+  .thumb {
+    flex: none;
+    width: 44px;
+    height: 32px;
+    object-fit: cover;
+    border-radius: 4px;
+    background: #18181b;
+    border: 1px solid #3f3f46;
+  }
   .kind { flex: none; width: 72px; font-size: 12px; color: var(--muted); }
   .kind[data-kind="prompt"] { color: var(--mark); }
   .kind[data-kind="code"] { color: var(--code); }
@@ -92,7 +101,18 @@
     font-size: 12.5px;
     line-height: 1.5;
   }
-  .preview-kind { color: var(--muted); font-size: 12px; margin-bottom: 10px; font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif; }
+  .preview-kind { color: var(--muted); font-size: 12px; margin-bottom: 8px; font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif; }
+  .why { margin: 0 0 12px; color: #e4e4e7; }
+  .shot {
+    display: block;
+    max-width: 100%;
+    max-height: 340px;
+    object-fit: contain;
+    border-radius: 8px;
+    background: #18181b;
+    border: 1px solid #27272a;
+    margin-bottom: 12px;
+  }
   .empty { color: var(--muted); padding: 22px 18px; }
   .bar {
     display: flex;
@@ -106,15 +126,16 @@
   kbd {
     font-family: inherit;
     font-size: 11px;
-    border: 1px solid #3a362f;
+    border: 1px solid #3f3f46;
     border-bottom-width: 2px;
     border-radius: 4px;
     padding: 1px 5px;
-    color: #d9d3c7;
+    color: #e4e4e7;
   }
+  #status { margin-left: auto; color: #e4e4e7; }
   .list::-webkit-scrollbar, .preview::-webkit-scrollbar { width: 10px; }
   .list::-webkit-scrollbar-thumb, .preview::-webkit-scrollbar-thumb {
-    background: #3a362f;
+    background: #3f3f46;
     border-radius: 99px;
     border: 2px solid var(--bg);
   }
@@ -140,6 +161,7 @@
     <span><kbd>Esc</kbd> Hide</span>
     <span><kbd>1</kbd>–<kbd>9</kbd> Paste</span>
     <span>Win+V is Windows history</span>
+    <span id="status"></span>
   </div>
 </div>
 <script>
@@ -153,6 +175,7 @@ const commands = [
   { id: "cmd-prompts", kind: "command", preview: "Show saved prompts", detail: "A prompt is text that tells an agent what to do. These are the copies already marked that way.", command: "prompts" },
   { id: "cmd-pinned", kind: "command", preview: "Show pinned copies", detail: "Pinned copies stay when old history is pruned.", command: "pinned" },
   { id: "cmd-book", kind: "command", preview: "Save the selected copy to the Starlight prompt book", detail: "Writes a private entry under the Starlight prompt fabric. It does not push to GitHub and it does not become Arcanea canon.", command: "book" },
+  { id: "cmd-brain", kind: "command", preview: "File this copy in the second brain", detail: "Writes one private note for this copy. It does not import the rest of the clipboard, and it does not publish it.", command: "brain" },
 ];
 let items = [];
 let copies = [];
@@ -189,27 +212,29 @@ function renderPreview() {
   }
   const kind = document.createElement("div");
   kind.className = "preview-kind";
-  const bits = [labels[item.kind] || "Text", item.app, item.device].filter(Boolean);
-  if (item.reason) bits.push(item.reason);
-  else if (item.kind === "prompt") bits.push("Instructions for an agent");
+  const bits = [labels[item.kind] || "Text", item.app, item.title, item.device].filter(Boolean);
   if (item.book) bits.push("In the Starlight book");
   if (item.pinned) bits.push("Pinned");
   kind.textContent = bits.join("  ·  ");
   const parts = [kind];
+  const why = item.reason || (item.kind === "prompt" ? "Instructions for an agent" : "");
+  if (why) {
+    const line = document.createElement("div");
+    line.className = "why";
+    line.textContent = why;
+    parts.push(line);
+  }
   if (item.image) {
     const img = document.createElement("img");
+    img.className = "shot";
     img.alt = "";
     img.src = "/api/image?id=" + item.id + "&k=" + encodeURIComponent(token);
-    img.style.maxWidth = "100%";
-    img.style.maxHeight = "280px";
-    img.style.objectFit = "contain";
-    img.style.borderRadius = "8px";
-    img.style.display = "block";
-    img.style.marginBottom = "12px";
     parts.push(img);
   }
   const body = document.createElement("div");
-  body.textContent = item.stored ? item.body : (item.image ? "" : "The value was not stored.");
+  if (item.kind === "image" && !item.image) body.textContent = "The picture was not kept. Copy it again.";
+  else if (item.body) body.textContent = item.body;
+  else if (!item.image) body.textContent = "The value was not stored.";
   if (body.textContent) parts.push(body);
   preview.replaceChildren(...parts);
 }
@@ -251,6 +276,13 @@ function render() {
     kind.className = "kind";
     kind.dataset.kind = item.kind;
     kind.textContent = index < 9 ? (index + 1) + "  " + (labels[item.kind] || "Text") : (labels[item.kind] || "Text");
+    if (item.image) {
+      const thumb = document.createElement("img");
+      thumb.className = "thumb";
+      thumb.alt = "";
+      thumb.src = "/api/image?id=" + item.id + "&k=" + encodeURIComponent(token);
+      line.append(thumb);
+    }
     const text = document.createElement("span");
     text.className = "text";
     text.textContent = item.preview || "Empty copy";
@@ -329,6 +361,7 @@ function runCommand(item) {
   if (item.command === "prompts") { view = "prompts"; input.value = ""; load(); }
   if (item.command === "pinned") { view = "pinned"; input.value = ""; load(); }
   if (item.command === "book") book();
+  if (item.command === "brain") brain();
 }
 
 async function paste() {
@@ -348,10 +381,27 @@ async function pin() {
 
 async function book() {
   const selectedItem = current();
-  const item = selectedItem && selectedItem.stored ? selectedItem : copies.find((row) => row.stored);
-  if (!item || !item.stored) return;
+  const item = selectedItem && selectedItem.stored && !selectedItem.command ? selectedItem : copies.find((row) => row.stored && row.kind !== "image");
+  if (!item || !item.stored || item.kind === "image") return;
   await post("/api/book", { scope: "starlight" }, item.id);
   await load();
+}
+
+async function brain() {
+  const selectedItem = current();
+  const status = document.getElementById("status");
+  let item = null;
+  if (selectedItem && selectedItem.command) {
+    item = copies.find((row) => row.stored && row.kind !== "image" && row.kind !== "secret");
+  } else if (selectedItem && selectedItem.stored && selectedItem.kind !== "image" && selectedItem.kind !== "secret") {
+    item = selectedItem;
+  }
+  if (!item) {
+    if (status) status.textContent = "That copy stays out of the second brain";
+    return;
+  }
+  const result = await post("/api/brain", {}, item.id);
+  if (status) status.textContent = result && result.ok ? "Filed one note in the second brain" : "That copy stays out of the second brain";
 }
 
 function closePanel() {

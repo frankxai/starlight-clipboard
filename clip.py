@@ -11,6 +11,7 @@ import os
 import re
 import secrets
 import sqlite3
+import struct
 import subprocess
 import sys
 import threading
@@ -21,8 +22,9 @@ from ctypes import wintypes
 from datetime import datetime, timezone
 from pathlib import Path
 
-DEFAULT_ROOT = Path(r"C:\Users\frank\.starlight\clipboard-index")
-DEFAULT_FABRIC = Path(r"C:\Users\frank\.starlight\prompt-fabric")
+def starlight_dir(*parts: str) -> Path:
+    home = os.environ.get("USERPROFILE") or str(Path.home())
+    return Path(home).joinpath(".starlight", *parts)
 FABRIC_BOOKS = {
     "frank": "frank-operating-voice",
     "starlight": "starlight-operations",
@@ -60,6 +62,40 @@ SENSITIVE_APPS = {
 SENSITIVE_TITLE = re.compile(
     r"(?i)\b(bitwarden|keepass|1password|lastpass|dashlane|nordpass|credential manager|windows security)\b"
 )
+OWNER_NOISE = {
+    "python.exe",
+    "pythonw.exe",
+    "textinputhost.exe",
+    "svchost.exe",
+    "runtimebroker.exe",
+    "applicationframehost.exe",
+    "shellexperiencehost.exe",
+    "searchhost.exe",
+    "startmenuexperiencehost.exe",
+    "lockapp.exe",
+    "dllhost.exe",
+    "pickerhost.exe",
+}
+APP_NAMES = {
+    "chrome.exe": "Chrome",
+    "msedge.exe": "Edge",
+    "firefox.exe": "Firefox",
+    "windowsterminal.exe": "Terminal",
+    "code.exe": "VS Code",
+    "cursor.exe": "Cursor",
+    "notepad.exe": "Notepad",
+    "snippingtool.exe": "Snip",
+    "screenclippinghost.exe": "Snip",
+    "explorer.exe": "Explorer",
+    "winword.exe": "Word",
+    "excel.exe": "Excel",
+    "powerpnt.exe": "PowerPoint",
+    "slack.exe": "Slack",
+    "discord.exe": "Discord",
+    "telegram.exe": "Telegram",
+    "whatsapp.exe": "WhatsApp",
+    "outlook.exe": "Outlook",
+}
 
 PROMPT_LINE = re.compile(
     r"(?im)^\s*(you are|act as|your (?:job|task|role) is|system prompt|instructions?:)\b"
@@ -190,7 +226,7 @@ def secret_patterns() -> list[tuple[str, re.Pattern[str]]]:
 
 
 def paths() -> dict[str, Path]:
-    root = Path(os.environ["CLIP_HOME"]) if os.environ.get("CLIP_HOME") else DEFAULT_ROOT
+    root = Path(os.environ["CLIP_HOME"]) if os.environ.get("CLIP_HOME") else starlight_dir("clipboard-index")
     data = root / "data"
     return {
         "root": root,
@@ -494,6 +530,7 @@ def ingest(
     png_bytes: bytes | None = None,
 ) -> dict | None:
     files = files or []
+    png_bytes = trim_png(png_bytes) if png_bytes else None
     raw = (text or "").replace("\x00", "")
     read_truncated = False
     if len(raw) > MAX_READ:
@@ -540,7 +577,9 @@ def ingest(
         body = None
         stored_for_hash = None
 
-    if secret_only or kind == "image":
+    if kind == "image" and png_bytes:
+        digest = hashlib.sha256(png_bytes).hexdigest()
+    elif secret_only or kind == "image":
         digest = hashlib.sha256(f"{kind}|{time.time_ns()}".encode("utf-8")).hexdigest()
     else:
         digest = hashlib.sha256((stored_for_hash or "").encode("utf-8")).hexdigest()
@@ -549,7 +588,7 @@ def ingest(
         preview = "[redacted:" + ",".join(labels or ["secret"]) + "]"
         char_len = 0
     elif kind == "image":
-        preview = "[image]"
+        preview = "Picture"
         char_len = 0
     else:
         preview = preview_of(body or "")
@@ -578,7 +617,7 @@ def ingest(
         suppress = paths()["suppress"]
         if suppress.exists():
             expected = suppress.read_text(encoding="ascii").strip()
-            if expected and expected == digest:
+            if expected == "own" or (expected and expected == digest):
                 suppress.unlink(missing_ok=True)
                 return None
         last = conn.execute(
@@ -691,6 +730,10 @@ def prune(conn: sqlite3.Connection) -> int:
         path = Path(sidecar)
         if path.is_file():
             path.unlink()
+    for clip_id in doomed:
+        image = paths()["data"] / "images" / f"{clip_id}.png"
+        if image.is_file():
+            image.unlink()
     return len(doomed)
 
 
@@ -717,6 +760,247 @@ def window_source(hwnd: int) -> tuple[str, str]:
             finally:
                 kernel32.CloseHandle(handle)
     return app, title
+
+
+def display_app(app: str) -> str:
+    raw = (app or "").strip()
+    if not raw:
+        return ""
+    mapped = APP_NAMES.get(raw.lower())
+    if mapped:
+        return mapped
+    if raw.lower().endswith(".exe"):
+        raw = raw[:-4]
+    return raw[:1].upper() + raw[1:] if raw else ""
+
+
+def clean_title(app: str, title: str) -> str:
+    cleaned = re.sub(r"\s+", " ", title or "").strip()
+    for suffix in (
+        " - Google Chrome",
+        " - Microsoft Edge",
+        " - Mozilla Firefox",
+        " - Visual Studio Code",
+        " - Cursor",
+        " - Windows Terminal",
+        " - Notepad",
+    ):
+        if cleaned.endswith(suffix):
+            cleaned = cleaned[: -len(suffix)].strip()
+    if not cleaned or cleaned.lower() in {app.lower(), display_app(app).lower()}:
+        return ""
+    return cleaned[:72]
+
+
+def choose_app(owner_app: str, owner_title: str, fallback_app: str, fallback_title: str) -> tuple[str, str]:
+    app = owner_app or ""
+    title = owner_title or ""
+    if not app or app.lower() in OWNER_NOISE:
+        app, title = fallback_app or "", fallback_title or ""
+    if app.lower() in OWNER_NOISE:
+        return "", ""
+    return app, title
+
+
+def trim_png(raw: bytes | None) -> bytes | None:
+    if not raw or len(raw) < 32 or not raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return None
+    end = raw.rfind(b"IEND")
+    if end < 8:
+        return None
+    stop = end + 8
+    if stop > len(raw) or stop > 8_000_000:
+        return None
+    return raw[:stop]
+
+
+def dib_to_bmp(dib: bytes) -> bytes | None:
+    if len(dib) < 40:
+        return None
+    header_size = int.from_bytes(dib[0:4], "little")
+    if header_size < 40 or header_size > min(len(dib), 256):
+        return None
+    bit_count = int.from_bytes(dib[14:16], "little")
+    compression = int.from_bytes(dib[16:20], "little")
+    clr_used = int.from_bytes(dib[32:36], "little") if len(dib) >= 36 else 0
+    extra = 12 if compression == 3 and header_size == 40 else 0
+    colors = clr_used
+    if colors == 0 and 0 < bit_count <= 8:
+        colors = 1 << bit_count
+    if bit_count == 0 or bit_count > 32:
+        return None
+    pixel_off = header_size + extra + colors * 4
+    if pixel_off <= 0 or pixel_off > len(dib):
+        return None
+    file_off = 14 + pixel_off
+    file_size = 14 + len(dib)
+    return struct.pack("<2sIHHI", b"BM", file_size, 0, 0, file_off) + dib
+
+
+class _Guid(ctypes.Structure):
+    _fields_ = [
+        ("Data1", ctypes.c_uint32),
+        ("Data2", ctypes.c_uint16),
+        ("Data3", ctypes.c_uint16),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+
+class _GdiplusStartupInput(ctypes.Structure):
+    _fields_ = [
+        ("GdiplusVersion", ctypes.c_uint32),
+        ("DebugEventCallback", ctypes.c_void_p),
+        ("SuppressBackgroundThread", wintypes.BOOL),
+        ("SuppressExternalCodecs", wintypes.BOOL),
+    ]
+
+
+_GDIP_TOKEN = ctypes.c_ulong(0)
+_ENCODERS: dict[str, _Guid] = {}
+
+
+def _gdiplus():
+    library = ctypes.windll.gdiplus
+    library.GdiplusStartup.argtypes = [ctypes.POINTER(ctypes.c_ulong), ctypes.c_void_p, ctypes.c_void_p]
+    library.GdiplusStartup.restype = ctypes.c_int
+    library.GdipGetImageEncodersSize.argtypes = [ctypes.POINTER(ctypes.c_uint), ctypes.POINTER(ctypes.c_uint)]
+    library.GdipGetImageEncodersSize.restype = ctypes.c_int
+    library.GdipGetImageEncoders.argtypes = [ctypes.c_uint, ctypes.c_uint, ctypes.c_void_p]
+    library.GdipGetImageEncoders.restype = ctypes.c_int
+    library.GdipLoadImageFromFile.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_void_p)]
+    library.GdipLoadImageFromFile.restype = ctypes.c_int
+    library.GdipSaveImageToFile.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.POINTER(_Guid), ctypes.c_void_p]
+    library.GdipSaveImageToFile.restype = ctypes.c_int
+    library.GdipDisposeImage.argtypes = [ctypes.c_void_p]
+    library.GdipDisposeImage.restype = ctypes.c_int
+    return library
+
+
+def _ensure_gdiplus() -> bool:
+    if _GDIP_TOKEN.value:
+        return True
+    startup = _GdiplusStartupInput(1, None, False, False)
+    status = _gdiplus().GdiplusStartup(ctypes.byref(_GDIP_TOKEN), ctypes.byref(startup), None)
+    return status == 0 and bool(_GDIP_TOKEN.value)
+
+
+def _encoder(mime: str) -> _Guid | None:
+    found = _ENCODERS.get(mime)
+    if found is not None:
+        return found
+    if not _ensure_gdiplus():
+        return None
+    count = ctypes.c_uint()
+    size = ctypes.c_uint()
+    library = _gdiplus()
+    if library.GdipGetImageEncodersSize(ctypes.byref(count), ctypes.byref(size)) != 0 or not size.value:
+        return None
+    buffer = ctypes.create_string_buffer(size.value)
+    if library.GdipGetImageEncoders(count.value, size.value, buffer) != 0:
+        return None
+    pointer = ctypes.sizeof(ctypes.c_void_p)
+    step = 32 + pointer * 5 + 16 + pointer * 2
+    for index in range(count.value):
+        base = index * step
+        mime_at = base + 32 + 4 * pointer
+        mime_ptr = int.from_bytes(buffer.raw[mime_at : mime_at + pointer], "little")
+        if mime_ptr and ctypes.wstring_at(mime_ptr).lower() == mime:
+            guid = _Guid.from_buffer_copy(buffer.raw[base : base + 16])
+            _ENCODERS[mime] = guid
+            return guid
+    return None
+
+
+def _convert_image(source: bytes, source_suffix: str, mime: str) -> bytes | None:
+    if not source or not _encoder(mime):
+        return None
+    folder = paths()["data"] / "tmp"
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = time.time_ns()
+    src = folder / f"{stamp}{source_suffix}"
+    dest = folder / f"{stamp}.out"
+    image = ctypes.c_void_p()
+    try:
+        src.write_bytes(source)
+        library = _gdiplus()
+        if library.GdipLoadImageFromFile(str(src), ctypes.byref(image)) != 0 or not image.value:
+            return None
+        encoder = _encoder(mime)
+        if encoder is None or library.GdipSaveImageToFile(image, str(dest), ctypes.byref(encoder), None) != 0:
+            return None
+        if not dest.is_file():
+            return None
+        return dest.read_bytes()
+    except OSError:
+        return None
+    finally:
+        if image.value:
+            _gdiplus().GdipDisposeImage(image)
+        src.unlink(missing_ok=True)
+        dest.unlink(missing_ok=True)
+
+
+def dib_to_png(dib: bytes) -> bytes | None:
+    bmp = dib_to_bmp(dib)
+    if not bmp:
+        return None
+    converted = _convert_image(bmp, ".bmp", "image/png")
+    return trim_png(converted)
+
+
+def png_to_dib(png: bytes) -> bytes | None:
+    picture = trim_png(png)
+    if not picture:
+        return None
+    bmp = _convert_image(picture, ".png", "image/bmp")
+    if not bmp or not bmp.startswith(b"BM") or len(bmp) < 54:
+        return None
+    return bmp[14:]
+
+
+def saved_image(clip_id: int) -> Path | None:
+    path = paths()["data"] / "images" / f"{clip_id}.png"
+    try:
+        if not path.is_file() or path.stat().st_size < 32:
+            return None
+        with path.open("rb") as handle:
+            handle.seek(-24, os.SEEK_END)
+            if b"IEND" not in handle.read():
+                return None
+    except OSError:
+        return None
+    return path
+
+
+def own_paste_pending() -> bool:
+    path = paths()["suppress"]
+    try:
+        if not path.is_file() or path.read_text(encoding="ascii").strip() != "own":
+            return False
+        if time.time() - path.stat().st_mtime < 1.2:
+            return True
+        path.unlink(missing_ok=True)
+    except OSError:
+        return False
+    return False
+
+
+def mark_own_paste() -> None:
+    path = paths()["suppress"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("own\n", encoding="ascii")
+
+
+def history_panel_open() -> bool:
+    user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+    user32.GetAsyncKeyState.restype = ctypes.c_short
+    if user32.GetAsyncKeyState(0x5B) & 0x8000 or user32.GetAsyncKeyState(0x5C) & 0x8000:
+        return True
+    hwnd = int(user32.GetForegroundWindow() or 0)
+    if not hwnd or window_class(hwnd) != "Windows.UI.Core.CoreWindow":
+        return False
+    _app, title = window_source(hwnd)
+    return "Input Experience" in title or title == "Clipboard"
 
 
 def read_global_text(handle: int) -> str | None:
@@ -753,13 +1037,7 @@ def html_format_to_text(raw: bytes) -> str:
 
 
 def read_clipboard() -> dict | None:
-    opened = False
-    for _ in range(6):
-        if user32.OpenClipboard(None):
-            opened = True
-            break
-        time.sleep(0.05)
-    if not opened:
+    if not user32.OpenClipboard(None):
         return None
     try:
         text = None
@@ -802,18 +1080,29 @@ def read_clipboard() -> dict | None:
             handle = user32.GetClipboardData(png_format)
             if handle:
                 raw_png = read_global_bytes(handle)
-                if raw_png and len(raw_png) <= 8_000_000 and raw_png.startswith(b"\x89PNG"):
-                    png_bytes = raw_png.split(b"\x00", 1)[0]
+                if raw_png and len(raw_png) <= 8_000_000:
+                    png_bytes = raw_png
+        dib = None
+        if trim_png(png_bytes) is None:
+            for image_format in (CF_DIBV5, CF_DIB):
+                if not user32.IsClipboardFormatAvailable(image_format):
+                    continue
+                handle = user32.GetClipboardData(image_format)
+                raw_dib = read_global_bytes(handle) if handle else None
+                if raw_dib and 40 <= len(raw_dib) <= 24_000_000:
+                    dib = raw_dib
+                    break
         owner = user32.GetClipboardOwner()
         app, title = window_source(int(owner) if owner else 0)
         return {
             "text": text,
             "files": files,
-            "has_image": has_image or bool(png_bytes),
+            "has_image": has_image or bool(png_bytes) or bool(dib),
             "app": app,
             "title": title,
             "html": html_bytes,
             "png": png_bytes,
+            "dib": dib,
         }
     finally:
         user32.CloseClipboard()
@@ -865,30 +1154,76 @@ def set_clipboard_text(text: str, html_bytes: bytes | None = None) -> None:
             kernel32.GlobalFree(handle)
 
 
+def set_clipboard_image(png: bytes) -> None:
+    picture = trim_png(png)
+    if not picture:
+        raise OSError("picture is not a png")
+    dib = png_to_dib(picture)
+    png_format = user32.RegisterClipboardFormatW("PNG")
+    if not png_format:
+        raise OSError("png format unavailable")
+
+    def alloc(payload: bytes) -> int | None:
+        handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(payload))
+        if not handle:
+            return None
+        pointer = kernel32.GlobalLock(handle)
+        if not pointer:
+            kernel32.GlobalFree(handle)
+            return None
+        ctypes.memmove(pointer, payload, len(payload))
+        kernel32.GlobalUnlock(handle)
+        return int(handle)
+
+    png_handle = alloc(picture)
+    dib_handle = alloc(dib) if dib else None
+    if not png_handle:
+        if dib_handle:
+            kernel32.GlobalFree(dib_handle)
+        raise OSError("clipboard alloc failed")
+    if not user32.OpenClipboard(None):
+        kernel32.GlobalFree(png_handle)
+        if dib_handle:
+            kernel32.GlobalFree(dib_handle)
+        raise OSError("clipboard open failed")
+    try:
+        if not user32.EmptyClipboard():
+            raise OSError("clipboard empty failed")
+        if not user32.SetClipboardData(png_format, png_handle):
+            raise OSError("clipboard set failed")
+        png_handle = None
+        if dib_handle and user32.SetClipboardData(CF_DIB, dib_handle):
+            dib_handle = None
+    finally:
+        user32.CloseClipboard()
+        if png_handle:
+            kernel32.GlobalFree(png_handle)
+        if dib_handle:
+            kernel32.GlobalFree(dib_handle)
+
+
 def capture_once(fallback_app: str = "", fallback_title: str = "") -> dict | None:
+    if own_paste_pending():
+        return {"skipped": True}
     snapshot = read_clipboard()
     if snapshot is None:
         log("capture skipped: clipboard busy")
         return None
-    app = snapshot["app"] or fallback_app
-    title = snapshot["title"] or fallback_title
-    if app.lower() in {"python.exe", "pythonw.exe", "textinputhost.exe"}:
-        app, title = fallback_app, fallback_title
-        if app.lower() in {"python.exe", "pythonw.exe", "textinputhost.exe"}:
-            app, title = "", ""
+    app, title = choose_app(snapshot["app"], snapshot["title"], fallback_app, fallback_title)
+    png_bytes = trim_png(snapshot.get("png"))
+    if png_bytes is None and snapshot.get("dib"):
+        png_bytes = dib_to_png(snapshot["dib"])
     result = ingest(
         snapshot["text"],
         app=app,
         title=title,
         files=snapshot["files"],
-        has_image=snapshot["has_image"] or bool(snapshot.get("png")),
+        has_image=snapshot["has_image"] or bool(png_bytes),
         html_bytes=snapshot.get("html"),
-        png_bytes=snapshot.get("png"),
+        png_bytes=png_bytes,
     )
     if result and not result.get("duplicate"):
-        log(
-            f"recorded id={result['id']} kind={result['kind']} chars={result.get('chars', 0)} app={snapshot['app']}"
-        )
+        log(f"recorded id={result['id']} kind={result['kind']} chars={result.get('chars', 0)} app={app}")
     return result
 
 
@@ -942,12 +1277,20 @@ def watch() -> int:
     while True:
         pump_hotkey(hot_hwnd)
         pending = PANEL.get("pending_clip")
-        if pending and time.monotonic() >= pending[0]:
-            PANEL["pending_clip"] = None
-            try:
-                capture_once(pending[1], pending[2])
-            except Exception:
-                log("capture failed")
+        if pending and time.monotonic() >= pending["due"]:
+            if history_panel_open() and pending["tries"] < 40:
+                pending["due"] = time.monotonic() + 0.3
+            else:
+                try:
+                    result = capture_once(pending["app"], pending["title"])
+                except Exception:
+                    log("capture failed")
+                    result = {"skipped": True}
+                if result is None and pending["tries"] < 8:
+                    pending["tries"] += 1
+                    pending["due"] = time.monotonic() + 0.4
+                else:
+                    PANEL["pending_clip"] = None
         if stop.exists():
             stop.unlink(missing_ok=True)
             log("stopped")
@@ -1149,22 +1492,24 @@ def copy_back(clip_id: int) -> int:
     if row is None:
         emit(f"No copy #{clip_id}.")
         return 1
-    if not row["body"]:
-        emit("That copy has no stored text.")
+    picture = saved_image(clip_id)
+    if picture is None and not row["body"]:
+        emit("That copy has nothing stored to paste.")
         return 1
-    digest = hashlib.sha256(row["body"].encode("utf-8")).hexdigest()
-    paths()["data"].mkdir(parents=True, exist_ok=True)
-    paths()["suppress"].write_text(digest, encoding="ascii")
-    html_bytes = None
+    mark_own_paste()
     try:
-        extra = json.loads(row["extra_json"] or "{}")
-        encoded = extra.get("html_b64")
-        if encoded:
-            html_bytes = __import__("base64").b64decode(encoded)
-    except (json.JSONDecodeError, ValueError):
-        html_bytes = None
-    try:
-        set_clipboard_text(row["body"], html_bytes)
+        if picture is not None and not row["body"]:
+            set_clipboard_image(picture.read_bytes())
+        else:
+            html_bytes = None
+            try:
+                extra = json.loads(row["extra_json"] or "{}")
+                encoded = extra.get("html_b64")
+                if encoded:
+                    html_bytes = __import__("base64").b64decode(encoded)
+            except (json.JSONDecodeError, ValueError):
+                html_bytes = None
+            set_clipboard_text(row["body"], html_bytes)
     except OSError:
         paths()["suppress"].unlink(missing_ok=True)
         emit("Clipboard is busy.")
@@ -1242,7 +1587,7 @@ def stop() -> int:
 
 
 def fabric_root() -> Path:
-    return Path(os.environ["PROMPT_FABRIC"]) if os.environ.get("PROMPT_FABRIC") else DEFAULT_FABRIC
+    return Path(os.environ["PROMPT_FABRIC"]) if os.environ.get("PROMPT_FABRIC") else starlight_dir("prompt-fabric")
 
 
 def entry_title(body: str) -> str:
@@ -1416,6 +1761,91 @@ def promote(clip_id: int, scope: str) -> int:
     return 0
 
 
+def vault_atoms() -> Path:
+    override = os.environ.get("STARLIGHT_VAULT")
+    if override:
+        return Path(override) / "atoms"
+    candidate = Path(r"C:\Users\frank\starlight\repos\starlight-memory-vault")
+    if candidate.is_dir():
+        return candidate / "atoms"
+    return paths()["root"] / "memory-atoms"
+
+
+def remember_one(clip_id: int) -> int:
+    conn = connect()
+    try:
+        init_db(conn)
+        row = fetch(conn, clip_id)
+    finally:
+        conn.close()
+    if row is None:
+        emit(f"No copy #{clip_id}.")
+        return 1
+    if row["kind"] == "secret" or not row["body"]:
+        emit("That copy stays out of the second brain.")
+        return 1
+    atoms = vault_atoms()
+    atoms.mkdir(parents=True, exist_ok=True)
+    needle = f"clipboard_clip: {clip_id}\n"
+    for path in atoms.glob("clipboard-*.md"):
+        try:
+            head = path.read_text(encoding="utf-8")[:1200]
+        except OSError:
+            continue
+        if needle in head:
+            emit(str(path))
+            return 0
+    body = row["body"].replace("\r\n", "\n").strip()
+    if len(body) > 12000:
+        body = body[:12000].rstrip() + "\n\n[truncated]"
+    title = entry_title(body)
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:48] or "copy"
+    digest = hashlib.sha256(body.encode("utf-8")).hexdigest()[:6]
+    memory_id = f"clipboard-{clip_id}-{slug}-{digest}"
+    reason = ""
+    try:
+        extra = json.loads(row["extra_json"] or "{}")
+        reason = str(extra.get("reason") or "")
+    except json.JSONDecodeError:
+        reason = ""
+    kind = row["kind"] or "text"
+    app = display_app(row["source_app"] or "")
+    lines = [
+        "---",
+        f"memory_id: {memory_id}",
+        f"summary: {quote_yaml(title)}",
+        "memory_type: episodic",
+        "vault: technical",
+        f"tags: [clipboard, {kind}]",
+        "importance: 0.4",
+        "confidence: 0.7",
+        "trust: 0.6",
+        "privacy_class: private",
+        "retention_policy: review",
+        "tenant_id: frank",
+        f"observed_at: {quote_yaml(row['captured_at'] or utc_now())}",
+        f"clipboard_clip: {clip_id}",
+        "---",
+        "",
+        title,
+        "",
+        f"Filed from the Starlight clipboard ({app or 'unknown app'}, {kind}). One copy, because it was asked for.",
+        "",
+    ]
+    if reason:
+        lines.extend([reason, ""])
+    lines.extend([body, ""])
+    path = atoms / f"{memory_id}.md"
+    path.write_text("\n".join(lines), encoding="utf-8")
+    existing = find_fabric_entry(clip_id)
+    if existing and existing.is_file():
+        text = existing.read_text(encoding="utf-8")
+        if "second_brain: hold" in text:
+            existing.write_text(text.replace("second_brain: hold", "second_brain: filed", 1), encoding="utf-8")
+    emit(str(path))
+    return 0
+
+
 def show_fabric() -> int:
     index = fabric_root() / "INDEX.md"
     if not index.exists():
@@ -1492,6 +1922,29 @@ def self_test() -> int:
             promoted_text = promoted.read_text(encoding="utf-8")
             check("promote-raw", "kelpbridge" in promoted_text and phrase not in promoted_text)
             check("promote-once", promote(int(saved["id"]), "starlight") == 0)
+            check("ignore-owner", choose_app("svchost.exe", "Clipboard", "chrome.exe", "GitHub") == ("chrome.exe", "GitHub"))
+            check("display-chrome", display_app("chrome.exe") == "Chrome")
+            sample_png = bytes.fromhex(
+                "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+                "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+            )
+            check("trim-png", trim_png(sample_png + b"\x00\x00") == sample_png)
+            pixel = struct.pack("<IiiHHIIiiII", 40, 2, 2, 1, 32, 0, 16, 0, 0, 0, 0) + (b"\x10\x20\xf0\xff" * 4)
+            converted = dib_to_png(pixel)
+            check("dib-png", bool(converted) and trim_png(converted) == converted)
+            if converted:
+                shot = ingest(None, has_image=True, png_bytes=converted, app="SnippingTool.exe", title="Snip")
+                shot_path = saved_image(int(shot["id"])) if shot else None
+                check("image-file", shot_path is not None)
+                again = ingest(None, has_image=True, png_bytes=converted, app="SnippingTool.exe", title="Snip")
+                check("image-duplicate", bool(again) and again.get("duplicate") is True)
+            os.environ["STARLIGHT_VAULT"] = str(Path(tmp) / "vault")
+            check("remember", remember_one(int(saved["id"])) == 0)
+            check("remember-once", remember_one(int(saved["id"])) == 0)
+            atoms = list((Path(tmp) / "vault" / "atoms").glob("clipboard-*.md"))
+            atom_text = atoms[0].read_text(encoding="utf-8") if len(atoms) == 1 else ""
+            check("one-atom", len(atoms) == 1 and "kelpbridge" in atom_text and phrase not in atom_text)
+            check("remember-secret", remember_one(int(secret["id"])) == 1)
             url = ingest("https://frankx.ai/library", app="chrome.exe", title="FrankX")
             check("url-kind", bool(url) and url["kind"] == "url")
             manager = ingest("vault sample phrase", app="Bitwarden.exe", title="Bitwarden")
@@ -1510,6 +1963,7 @@ def self_test() -> int:
         else:
             os.environ["CLIP_HOME"] = previous
         os.environ.pop("PROMPT_FABRIC", None)
+        os.environ.pop("STARLIGHT_VAULT", None)
 
     if failures:
         emit("SELF-TEST FAILED")
@@ -1619,7 +2073,8 @@ def board_items(query: str) -> dict:
                 "body": body[:8000],
                 "more": len(body) > 8000,
                 "captured_at": row["captured_at"],
-                "app": (row["source_app"] or "").removesuffix(".exe"),
+                "app": display_app(row["source_app"] or ""),
+                "title": clean_title(row["source_app"] or "", row["source_title"] or ""),
                 "device": device,
                 "pinned": int(row["pinned"] or 0),
                 "book": find_fabric_entry(int(row["id"])) is not None,
@@ -1628,12 +2083,15 @@ def board_items(query: str) -> dict:
                 "image": False,
             }
         )
+        picture = saved_image(int(row["id"]))
+        items[-1]["image"] = picture is not None
+        if picture is not None:
+            items[-1]["stored"] = True
         try:
             extra = json.loads(row["extra_json"] or "{}")
             items[-1]["reason"] = str(extra.get("reason") or "")
-            items[-1]["image"] = bool(extra.get("image")) or row["kind"] == "image"
         except json.JSONDecodeError:
-            items[-1]["image"] = row["kind"] == "image"
+            pass
     return {"device": this_device(), "devices": devices, "items": items}
 
 
@@ -1656,7 +2114,7 @@ def remember_target(hwnd: int | None = None) -> int:
 def palette_bounds() -> tuple[int, int, int, int]:
     user32.GetSystemMetrics.argtypes = [ctypes.c_int]
     user32.GetSystemMetrics.restype = ctypes.c_int
-    width, height = 880, 560
+    width, height = 960, 620
     screen_w = user32.GetSystemMetrics(0) or 1280
     screen_h = user32.GetSystemMetrics(1) or 800
     return max(0, (screen_w - width) // 2), max(0, int(screen_h * 0.14)), width, height
@@ -1736,6 +2194,9 @@ def delete_clip(clip_id: int) -> bool:
         path = Path(sidecar)
         if path.is_file():
             path.unlink()
+    image = paths()["data"] / "images" / f"{clip_id}.png"
+    if image.is_file():
+        image.unlink()
     return True
 
 
@@ -1786,8 +2247,8 @@ def start_panel_server() -> None:
                 except ValueError:
                     self.send_error(404)
                     return
-                image = paths()["data"] / "images" / f"{clip_id}.png"
-                if not image.is_file():
+                image = saved_image(clip_id)
+                if image is None:
                     self.send_error(404)
                     return
                 payload = image.read_bytes()
@@ -1844,6 +2305,9 @@ def start_panel_server() -> None:
             if path == "/api/book":
                 scope = "frank" if str(payload.get("kind") or "") == "prompt" else str(payload.get("scope") or "starlight")
                 self._json(200, {"ok": promote(clip_id, scope) == 0})
+                return
+            if path == "/api/brain":
+                self._json(200, {"ok": remember_one(clip_id) == 0})
                 return
             if path == "/api/delete":
                 self._json(200, {"ok": delete_clip(clip_id)})
@@ -1967,11 +2431,18 @@ def pump_hotkey(hwnd: int) -> None:
     message = Msg()
     while user32.PeekMessageW(ctypes.byref(message), None, 0, 0, 1):
         if message.message == 0x031D:
+            if own_paste_pending():
+                continue
             foreground = int(user32.GetForegroundWindow() or 0)
             fallback_app, fallback_title = ("", "")
             if foreground and foreground != int(PANEL.get("hwnd") or 0):
                 fallback_app, fallback_title = window_source(foreground)
-            PANEL["pending_clip"] = (time.monotonic() + 0.4, fallback_app, fallback_title)
+            PANEL["pending_clip"] = {
+                "due": time.monotonic() + 0.45,
+                "app": fallback_app,
+                "title": fallback_title,
+                "tries": 0,
+            }
             continue
         if message.message == 0x0312:
             target = int(user32.GetForegroundWindow() or 0)
@@ -2036,6 +2507,9 @@ def build_parser() -> argparse.ArgumentParser:
     promote_cmd.add_argument("id", type=int)
     promote_cmd.add_argument("--scope", default="frank")
 
+    remember_cmd = sub.add_parser("remember", help="File one copy in the second brain")
+    remember_cmd.add_argument("id", type=int)
+
     sub.add_parser("fabric", help="List curated prompt-fabric entries")
     sub.add_parser("board", help="Open the clipboard window")
     sub.add_parser("status")
@@ -2082,6 +2556,8 @@ def main(argv: list[str] | None = None) -> int:
         return open_clip(args.id)
     if command == "promote":
         return promote(args.id, args.scope)
+    if command == "remember":
+        return remember_one(args.id)
     if command == "fabric":
         return show_fabric()
     if command == "board":
