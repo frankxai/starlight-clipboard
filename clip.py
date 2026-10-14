@@ -802,6 +802,176 @@ def choose_app(owner_app: str, owner_title: str, fallback_app: str, fallback_tit
     return app, title
 
 
+TERMINAL_HOSTS = {
+    "windowsterminal.exe",
+    "windowsterminalpreview.exe",
+    "openconsole.exe",
+    "conhost.exe",
+    "wt.exe",
+}
+_BOX_DRAWING = re.compile(r"[│┌┐└┘├┤┬┴┼╔╗╚╝║═╭╮╯╰]")
+_DIFF_LINE = re.compile(r"^(diff |index |@@|\+\+\+|---|\+[^+]|\-[^-])")
+
+
+def terminal_host(app: str) -> bool:
+    return (app or "").lower() in TERMINAL_HOSTS
+
+
+def _terminal_prose(text: str) -> bool:
+    sample = text[:8000]
+    if len(sample) < 40:
+        return False
+    letters = sum(ch.isalpha() for ch in sample)
+    spaces = sample.count(" ")
+    symbols = sum(sample.count(ch) for ch in "{}[]();=<>`")
+    return letters >= len(sample) * 0.45 and spaces >= len(sample) * 0.08 and symbols <= len(sample) * 0.04
+
+
+def _terminal_structured(lines: list[str]) -> bool:
+    nonempty = [line for line in lines if line.strip()]
+    if not nonempty or looks_like_code("\n".join(nonempty)):
+        return True
+    if any(line.lstrip().startswith("```") for line in nonempty):
+        return True
+    if sum(1 for line in nonempty if _BOX_DRAWING.search(line)) / len(nonempty) > 0.15:
+        return True
+    if sum(1 for line in nonempty if _DIFF_LINE.match(line.lstrip())) / len(nonempty) > 0.3:
+        return True
+    return False
+
+
+def _join_wrapped(left: str, right: str) -> str:
+    left = left.rstrip()
+    right = right.strip()
+    if not right:
+        return left
+    last = left[-1]
+    first = right[0]
+    if last == "-" and first.isalpha():
+        return left + right
+    token = 0
+    for ch in reversed(left):
+        if ch.isspace():
+            break
+        token += 1
+    if token <= 2 and last.isalpha() and first.islower():
+        return left + right
+    return left + " " + right
+
+
+def _keeps_break(line: str) -> bool:
+    stripped = line.lstrip()
+    if not stripped:
+        return True
+    if stripped[0] in "-*#>" or stripped.startswith("```"):
+        return True
+    return bool(re.match(r"\d+[.)]\s", stripped))
+
+
+def unwrap_terminal_wrap(text: str) -> str:
+    """Rejoin lines a terminal painted at the window edge. Keep real paragraphs and code."""
+    if not text or len(text) > 400_000 or "\n" not in text and "\r" not in text:
+        return text
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    had_trailing_newline = normalized.endswith("\n")
+    raw_lines = normalized.split("\n")
+    if had_trailing_newline and raw_lines and raw_lines[-1] == "":
+        raw_lines = raw_lines[:-1]
+    if len(raw_lines) < 2:
+        return text
+    lines = [line.rstrip() for line in raw_lines]
+    nonempty = [line for line in lines if line.strip()]
+    if len(nonempty) < 2 or _terminal_structured(lines) or not _terminal_prose("\n".join(nonempty)):
+        return text
+    max_len = max(len(line) for line in nonempty)
+    if max_len < 64 or max_len > 320:
+        return text
+    # Word wrap stops before the margin, so the painted edge is a band, not one column.
+    slack = min(18, max(8, max_len // 8))
+
+    def is_full(line: str) -> bool:
+        return bool(line.strip()) and len(line.rstrip()) >= max_len - slack
+
+    full = [line for line in nonempty if is_full(line)]
+    mid_sentence_pair = (
+        len(nonempty) == 2
+        and len(full) == 1
+        and is_full(nonempty[0])
+        and len(nonempty[1]) <= int(len(nonempty[0]) * 0.75)
+        and nonempty[0][-1] not in ".!?:;"
+        and nonempty[1].lstrip()[:1].islower()
+    )
+    if len(full) < 2 and not mid_sentence_pair:
+        return text
+
+    joined: list[str] = []
+    pending: str | None = None
+    pending_full = False
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if not line.strip():
+            nxt = next((item for item in lines[index + 1 :] if item.strip()), None)
+            if (
+                pending_full
+                and nxt is not None
+                and not _keeps_break(nxt)
+                and nxt.lstrip()[:1].islower()
+            ):
+                index += 1
+                continue
+            if pending is not None:
+                joined.append(pending)
+                pending = None
+                pending_full = False
+            if not joined or joined[-1] != "":
+                joined.append("")
+            index += 1
+            continue
+        if pending is None:
+            pending = line
+            pending_full = is_full(line)
+        elif pending_full and not _keeps_break(line):
+            pending = _join_wrapped(pending, line)
+            pending_full = is_full(line)
+        else:
+            joined.append(pending)
+            pending = line
+            pending_full = is_full(line)
+        index += 1
+    if pending is not None:
+        joined.append(pending)
+    while joined and joined[-1] == "":
+        joined.pop()
+    result = "\n".join(joined)
+    if had_trailing_newline:
+        result += "\n"
+    original = [line.rstrip() for line in normalized.split("\n")]
+    repaired = [line.rstrip() for line in result.split("\n")]
+    if original == repaired:
+        return text
+    return result
+
+
+def repair_terminal_clipboard(fallback_app: str = "") -> bool:
+    if own_paste_pending():
+        return False
+    snapshot = read_clipboard()
+    if snapshot is None:
+        return False
+    text = snapshot.get("text") or ""
+    if not text.strip() or snapshot.get("files") or snapshot.get("png") or snapshot.get("dib"):
+        return False
+    app, _title = choose_app(snapshot.get("app") or "", snapshot.get("title") or "", fallback_app, "")
+    if not (terminal_host(app) or terminal_host(snapshot.get("app") or "") or terminal_host(fallback_app)):
+        return False
+    fixed = unwrap_terminal_wrap(text)
+    if fixed == text:
+        return False
+    set_clipboard_text(fixed.replace("\n", "\r\n"))
+    return True
+
+
 def trim_png(raw: bytes | None) -> bytes | None:
     if not raw or len(raw) < 32 or not raw.startswith(b"\x89PNG\r\n\x1a\n"):
         return None
@@ -1210,16 +1380,29 @@ def capture_once(fallback_app: str = "", fallback_title: str = "") -> dict | Non
         log("capture skipped: clipboard busy")
         return None
     app, title = choose_app(snapshot["app"], snapshot["title"], fallback_app, fallback_title)
+    text = snapshot["text"]
+    html_bytes = snapshot.get("html")
+    if text and not snapshot["files"] and not snapshot.get("png") and not snapshot.get("dib"):
+        if terminal_host(app) or terminal_host(snapshot.get("app") or ""):
+            fixed = unwrap_terminal_wrap(text)
+            if fixed != text:
+                text = fixed
+                html_bytes = None
+                try:
+                    set_clipboard_text(fixed.replace("\n", "\r\n"))
+                    log("rejoined terminal wrap")
+                except OSError:
+                    log("terminal unwrap could not update clipboard")
     png_bytes = trim_png(snapshot.get("png"))
     if png_bytes is None and snapshot.get("dib"):
         png_bytes = dib_to_png(snapshot["dib"])
     result = ingest(
-        snapshot["text"],
+        text,
         app=app,
         title=title,
         files=snapshot["files"],
         has_image=snapshot["has_image"] or bool(png_bytes),
-        html_bytes=snapshot.get("html"),
+        html_bytes=html_bytes,
         png_bytes=png_bytes,
     )
     if result and not result.get("duplicate"):
@@ -1890,6 +2073,38 @@ def self_test() -> int:
     pem = ("-" * 5) + "BEGIN " + pem_kind + ("-" * 5) + "\nline\n" + ("-" * 5) + "END " + pem_kind + ("-" * 5)
     pem_clean, pem_labels = redact(pem)
     check("redact-pem", "line" not in pem_clean and "private-key" in pem_labels)
+    def wrap_words(source: str, width: int) -> str:
+        lines: list[str] = []
+        current = ""
+        for word in source.split():
+            trial = word if not current else current + " " + word
+            if len(trial) <= width:
+                current = trial
+            else:
+                if current:
+                    lines.append(current)
+                current = word
+        if current:
+            lines.append(current)
+        return "\n".join(lines)
+
+    sentence = (
+        "The agent printed this sentence across the width of the terminal window "
+        "and the copy kept every painted break in the paragraph so the next line "
+        "was still part of that same thought before the paragraph ended."
+    )
+    sample = wrap_words(sentence, 78)
+    rejoined = unwrap_terminal_wrap(sample)
+    check("unwrap-joins-edge", rejoined.rstrip("\n") == sentence and "\n" not in rejoined.rstrip("\n"))
+    check("unwrap-once", unwrap_terminal_wrap(rejoined) == rejoined)
+    paragraph = sample + "\n\nNext paragraph stays on its own line and should not be glued on."
+    split = unwrap_terminal_wrap(paragraph)
+    check("unwrap-keeps-paragraph", split.startswith(sentence + "\n\nNext paragraph"))
+    code = "def build(value):\n    return {'value': value, 'ok': True}\n\nprint(build(1))\n"
+    check("unwrap-keeps-code", unwrap_terminal_wrap(code) == code)
+    short = "one\ntwo\nthree\nfour\n"
+    check("unwrap-keeps-short", unwrap_terminal_wrap(short) == short)
+    check("terminal-host", terminal_host("WindowsTerminal.exe") and not terminal_host("chrome.exe"))
 
     previous = os.environ.get("CLIP_HOME")
     try:
@@ -2405,29 +2620,33 @@ def install_hotkey() -> int:
     return int(hwnd)
 
 
+class Point(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class Msg(ctypes.Structure):
+    _fields_ = [
+        ("hwnd", wintypes.HWND),
+        ("message", wintypes.UINT),
+        ("wParam", wintypes.WPARAM),
+        ("lParam", wintypes.LPARAM),
+        ("time", wintypes.DWORD),
+        ("pt", Point),
+    ]
+
+
+# ctypes never frees struct/pointer types, so these must be created once, not per 20 ms poll.
+user32.PeekMessageW.argtypes = [ctypes.POINTER(Msg), wintypes.HWND, wintypes.UINT, wintypes.UINT, wintypes.UINT]
+user32.PeekMessageW.restype = wintypes.BOOL
+user32.TranslateMessage.argtypes = [ctypes.POINTER(Msg)]
+user32.TranslateMessage.restype = wintypes.BOOL
+user32.DispatchMessageW.argtypes = [ctypes.POINTER(Msg)]
+user32.DispatchMessageW.restype = ctypes.c_ssize_t
+
+
 def pump_hotkey(hwnd: int) -> None:
     if not hwnd:
         return
-
-    class Point(ctypes.Structure):
-        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
-
-    class Msg(ctypes.Structure):
-        _fields_ = [
-            ("hwnd", wintypes.HWND),
-            ("message", wintypes.UINT),
-            ("wParam", wintypes.WPARAM),
-            ("lParam", wintypes.LPARAM),
-            ("time", wintypes.DWORD),
-            ("pt", Point),
-        ]
-
-    user32.PeekMessageW.argtypes = [ctypes.POINTER(Msg), wintypes.HWND, wintypes.UINT, wintypes.UINT, wintypes.UINT]
-    user32.PeekMessageW.restype = wintypes.BOOL
-    user32.TranslateMessage.argtypes = [ctypes.POINTER(Msg)]
-    user32.TranslateMessage.restype = wintypes.BOOL
-    user32.DispatchMessageW.argtypes = [ctypes.POINTER(Msg)]
-    user32.DispatchMessageW.restype = ctypes.c_ssize_t
     message = Msg()
     while user32.PeekMessageW(ctypes.byref(message), None, 0, 0, 1):
         if message.message == 0x031D:
@@ -2437,6 +2656,12 @@ def pump_hotkey(hwnd: int) -> None:
             fallback_app, fallback_title = ("", "")
             if foreground and foreground != int(PANEL.get("hwnd") or 0):
                 fallback_app, fallback_title = window_source(foreground)
+            if terminal_host(fallback_app):
+                try:
+                    if repair_terminal_clipboard(fallback_app):
+                        log("rejoined terminal wrap")
+                except Exception:
+                    log("terminal unwrap failed")
             PANEL["pending_clip"] = {
                 "due": time.monotonic() + 0.45,
                 "app": fallback_app,
