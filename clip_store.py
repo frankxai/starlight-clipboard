@@ -12,7 +12,7 @@ import sqlite3
 from datetime import datetime, timezone, timedelta
 import uuid
 
-VERSION = "2026.10.31.4"
+VERSION = "2026.10.31.5"
 SCHEMA_VERSION = 2
 STATES = {"active", "saved", "resolved", "archived"}
 MUSIC = re.compile(r"(?i)\b(piano|strings|guitar|synth|orchestral|cinematic|ambient|lo-fi|techno|trance|house|drums|vocals?|instrumental|chorus|verse|suno)\b")

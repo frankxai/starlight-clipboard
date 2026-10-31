@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-31T18:00:57.124621+00:00",
+  "title": "Design system: Starlight Clipboard",
+  "author": "Codex",
+  "revision": "v1",
+  "reviewState": "local-beta-independent-acceptance-pending",
+  "extensions": {
+    "shadows": [
+      {
+        "name": "workspace",
+        "value": "inset 0 1px rgba(255,255,255,.08),0 16px 48px rgba(0,0,0,.2)",
+        "purpose": "Separate the workspace from the ambient background."
+      }
+    ],
+    "motion": [
+      {
+        "name": "hover",
+        "value": "140ms cubic-bezier(.23,1,.32,1)",
+        "purpose": "Fine-pointer color feedback only; reduced motion removes it."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "compact-desktop",
+        "value": "1100px"
+      },
+      {
+        "name": "navigation-strip",
+        "value": "820px"
+      },
+      {
+        "name": "separate-reader",
+        "value": "600px"
+      }
+    ]
+  },
+  "components": [],
+  "narrative": {
+    "northStar": "Starlight liquid glass",
+    "overview": "A calm desktop workspace with a bold creative studio character. Translucent chrome surrounds a quiet reading surface.",
+    "keyCharacteristics": [
+      "Warm action color",
+      "Readable originals",
+      "Keyboard-first retrieval"
+    ],
+    "rules": [
+      {
+        "name": "Originals remain readable",
+        "body": "Keep glass in the chrome and use a nearly opaque reading surface.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Keep focus visible and touch targets at least 44px high."
+    ],
+    "donts": [
+      "Do not imply submission or off-device recovery without evidence."
+    ]
+  }
+}

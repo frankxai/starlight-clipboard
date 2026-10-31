@@ -1428,6 +1428,13 @@ def health_snapshot() -> dict:
             if conn.execute("PRAGMA user_version").fetchone()[0]>=2:
                 info["pending_exports"] = conn.execute("SELECT count(*) FROM clip_jobs WHERE status='pending'").fetchone()[0]
                 info["occurrences"] = conn.execute("SELECT count(*) FROM clip_occurrences").fetchone()[0]
+                counts = conn.execute("""SELECT count(*),
+                    sum(state NOT IN ('archived','resolved')),
+                    sum(kind='prompt' AND state NOT IN ('archived','resolved')),
+                    sum(use_case='suno' AND state NOT IN ('archived','resolved')),
+                    sum(state='saved'),sum(state='archived') FROM clips""").fetchone()
+                info["library"] = dict(zip(("history","all","prompts","suno","saved","archive"),
+                                           (int(value or 0) for value in counts)))
         finally:
             conn.close()
     info["last_backup"] = None
@@ -2311,6 +2318,7 @@ def board_items(query: str) -> dict:
                 "use_case": row["use_case"],
                 "copies": int(row["hit_count"]),
                 "captured_at": row["captured_at"],
+                "last_seen_at": row["last_seen_at"],
                 "app": display_app(row["source_app"] or ""),
                 "title": clean_title(row["source_app"] or "", row["source_title"] or ""),
                 "device": device,
@@ -2353,10 +2361,10 @@ def remember_target(hwnd: int | None = None) -> int:
 def palette_bounds() -> tuple[int, int, int, int]:
     user32.GetSystemMetrics.argtypes = [ctypes.c_int]
     user32.GetSystemMetrics.restype = ctypes.c_int
-    width, height = 960, 620
     screen_w = user32.GetSystemMetrics(0) or 1280
     screen_h = user32.GetSystemMetrics(1) or 800
-    return max(0, (screen_w - width) // 2), max(0, int(screen_h * 0.14)), width, height
+    width, height = max(1,min(1180,screen_w-48)),max(1,min(800,screen_h-72))
+    return max(0,(screen_w-width)//2),max(0,(screen_h-height)//2),width,height
 
 
 def strip_palette_chrome(hwnd: int) -> None:
