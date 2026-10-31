@@ -4,6 +4,8 @@ A private Windows clipboard archive with a shortcut palette and searchable promp
 
 Open **Starlight Clipboard** from the Start menu, or press **Ctrl+Alt+V** while capture is running. Your copies stay on this PC. Cloud inference and external publishing are disabled.
 
+Open **Starlight Music** from the same Start-menu folder, or run `clips music`, for the music workspace. Both entry points use the same collector and retained originals.
+
 ## Install
 
 Requires Windows, PowerShell 7 and Python 3.10 or newer. No pip packages, Node build, account, or API key is required.
@@ -52,6 +54,29 @@ The liquid-glass library groups captures by last-seen date and keeps the origina
 An interrupted search cannot paste its previous result. Connection failures offer Retry. Unsaved idea text survives hiding the composer; saving an earlier draft preserves edits made while that save was pending. Drafts remain in the window until saved or discarded. They are not recovered after a process crash.
 
 Archive changes visibility. Restore returns an archived capture to Recent. Records are no longer automatically deleted because of age or row count. Clipboard copies of files preserve their paths, not the referenced files themselves.
+
+## Music vibes and portable libraries
+
+Music includes four editable starter searches: Midnight piano, Cinematic ascent, Neon motion and Deep focus. Choose **New vibe** for a hand-picked collection or a saved search. Smart searches can combine tags, for example `use:suno tag:piano tag:intimate`. **Organize** on a retained text capture edits its tags and manual membership. Removing membership retains the original.
+
+**Suggest tags** proposes labels using local wording rules. Suggestions remain a draft until saved. The agent CLI also accepts provenance-bearing labels; user choices take precedence over an agent applying the same label. No external model is called automatically.
+
+```powershell
+clips library list
+clips library create --name "Rain room" --description "Piano sketches for the next project"
+clips library create --name "Quiet piano" --mode smart --query "use:suno tag:piano tag:intimate"
+clips library tag --id 12 --tags piano intimate
+clips library suggest --id 12
+clips library assign --id 12 --collection <collection-id>
+clips library export --collection <collection-id> --file <new-private-file.json>
+clips library import --file <private-handoff.json>
+```
+
+**Move library** exports selected originals, labels and collection definitions. Selecting a vibe limits the export to that vibe and its matching originals. Without a selected vibe, export includes matching music prompts and library definitions. Files are private and unencrypted, bounded to 450 KB; use an approved encrypted transfer channel. On the second installation, choose the file, inspect its validated counts and select **Import**. New imported originals appear in Saved.
+
+Import retains source identities and dates, reuses matching originals and refuses conflicting source content. Differing collection definitions become explicit imported variants. Existing local labels remain. Repeating a handoff is idempotent. Import is atomic and rejects unsupported fields and protected sources. This is a manual handoff; automatic sync, account login, revocation and encryption-key recovery remain a separate shared-platform stage. Full encrypted snapshots include the collections and labels.
+
+The existing Nexus app-center connector uses authenticated `/api/health` and `/api/raise` against the private runtime binding. It never requests original bodies for inventory. [The integration reference](integrations/starlight-app.json) documents the fixed companion identity and CLI. No parallel app center or account authority is installed here.
 
 ## Commands
 
@@ -134,4 +159,4 @@ py -3 clip.py self-test
 
 Tests use isolated temporary stores and fixtures, including recovery, protected sources, long originals, archive/search, full-text API previews, authorization, sequence suppression and failed exports. `tests/ui_fixture.py` produces an explicitly synthetic standalone preview; its optional browser driver checks focus, interrupted searches and drafts, disabled actions, viewport containment, touch target sizes and reduced-motion declarations. These checks do not certify real Windows clipboard coverage, physical input, reboot recovery, off-device backup or production deployment.
 
-Implementation author: Codex · 2026-10-31 · v3. Design tokens and review scope are in [DESIGN.md](DESIGN.md) and [the design review](docs/DESIGN-REVIEW-Codex-2026-10-31-v1.md). Exact source/review/install receipts belong with the task evidence; local private data never belongs in Git.
+Implementation author: Codex · 2026-10-31 · v4. Design tokens and review scope are in [DESIGN.md](DESIGN.md) and [the design review](docs/DESIGN-REVIEW-Codex-2026-10-31-v1.md). Exact source/review/install receipts belong with the task evidence; local private data never belongs in Git.

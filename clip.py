@@ -19,6 +19,7 @@ import time
 import uuid
 import clip_store
 import clip_integrations
+import clip_library
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from ctypes import wintypes
@@ -1446,6 +1447,9 @@ def health_snapshot() -> dict:
             pass
     info["known_capture_gaps"] = PANEL.get("capture_gaps",0)
     info["integrations"] = clip_integrations.status(location["root"])
+    info["navigation"] = PANEL.get("navigation")
+    info["suite"] = {"app_id": "clipboard", "music_collections": True,
+        "portable_library": "manual-handoff", "account_sync": "not-configured"}
     return info
 
 
@@ -2273,7 +2277,13 @@ def find_board_window() -> int:
     user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
     user32.FindWindowW.restype = wintypes.HWND
     user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-    found = user32.FindWindowW(None, BOARD_TITLE)
+    title = PANEL.get("window_title")
+    if not title:
+        try:
+            title = json.loads(panel_file().read_text(encoding="utf-8")).get("window_title")
+        except (OSError, ValueError):
+            title = None
+    found = user32.FindWindowW(None, title if isinstance(title, str) and title.startswith(BOARD_TITLE) else BOARD_TITLE)
     return int(found or 0)
 
 
@@ -2447,11 +2457,51 @@ def delete_clip(clip_id: int) -> bool:
     return True
 
 
+def validate_library_source(row: dict) -> None:
+    if sensitive_source(row.get("source_app") or "", row.get("source_title") or ""):
+        raise ValueError("A protected source cannot enter a library handoff.")
+    if any(redact(row.get(key) or "")[1] for key in ("body", "source_app", "source_title", "device")):
+        raise ValueError("The handoff contains credential-like content. Review it before importing.")
+
+
+def library_call(operation: str, payload: dict | None = None) -> dict:
+    payload = payload or {}
+    if operation in {"tags", "member", "suggestions"}:
+        value = payload.get("id")
+        if isinstance(value, bool) or not re.fullmatch(r"[1-9][0-9]{0,12}", str(value)):
+            raise ValueError("Choose a valid capture ID.")
+    conn = connect()
+    try:
+        init_db(conn)
+        if operation == "list":
+            return clip_library.snapshot(conn, int(payload["id"]) if payload.get("id") else None)
+        if operation == "collection":
+            return {"ok": True, "id": clip_library.save_collection(conn, payload)}
+        if operation == "tags":
+            return {"ok": True, "tags": clip_library.set_tags(conn, int(payload["id"]), payload.get("tags"),
+                payload.get("source", "user"), payload.get("reason", "Edited in the private library"))}
+        if operation == "member":
+            if not isinstance(payload.get("present"), bool):
+                raise ValueError("Membership requires a true or false choice.")
+            clip_library.membership(conn, payload.get("collection"), int(payload["id"]), payload["present"])
+            return {"ok": True}
+        if operation == "suggestions":
+            return {"suggestions": clip_library.suggestions(conn, int(payload["id"])), "method": "local-rules; no model call"}
+        if operation == "export":
+            return clip_library.export_bundle(conn, payload.get("query", "use:suno"), payload.get("collection"))
+        if operation in {"import", "preview"}:
+            return clip_library.import_bundle(conn, payload.get("bundle"), validate_library_source, operation == "preview")
+        raise ValueError("Unknown private library operation.")
+    finally:
+        conn.close()
+
+
 def start_panel_server() -> None:
     if PANEL["server"] is not None:
         return
     token = secrets.token_urlsafe(18)
     PANEL["token"] = token
+    PANEL["window_title"] = BOARD_TITLE + " · " + clip_store.VERSION + " · " + uuid.uuid4().hex[:8]
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, _format: str, *_args) -> None:
@@ -2501,7 +2551,11 @@ def start_panel_server() -> None:
             query = parse_qs(urlparse(self.path).query)
             if path in ("/", "/index.html"):
                 page = Path(__file__).with_name("board.html").read_text(encoding="utf-8")
+                page = page.replace("<title>Starlight Clipboard</title>", "<title>" + html.escape(PANEL["window_title"]) + "</title>")
                 self._send(200, page.replace("__TOKEN__", PANEL["token"]).encode("utf-8"), "text/html; charset=utf-8")
+                return
+            if path == "/library.js":
+                self._send(200, Path(__file__).with_name("library.js").read_bytes(), "text/javascript; charset=utf-8")
                 return
             if path == "/api/image":
                 try:
@@ -2518,6 +2572,22 @@ def start_panel_server() -> None:
                 return
             if path == "/api/health":
                 self._json(200,health_snapshot())
+                return
+            if path == "/api/navigation":
+                self._json(200, {"navigation": PANEL.get("navigation")})
+                return
+            if path.startswith("/api/library"):
+                operations = {"/api/library": "list", "/api/library/suggestions": "suggestions", "/api/library/export": "export"}
+                if path not in operations:
+                    self.send_error(404)
+                    return
+                try:
+                    value = {key: values[0] for key, values in query.items() if key in {"id", "query", "collection"}}
+                    self._json(200, library_call(operations[path], value))
+                except (ValueError, TypeError) as error:
+                    self._json(400, {"error": str(error) or "Invalid library request."})
+                except sqlite3.Error:
+                    self._json(503, {"error": "Library storage is unavailable. Retry after checking disk space."})
                 return
             if path == "/api/detail":
                 try:
@@ -2541,8 +2611,11 @@ def start_panel_server() -> None:
                 return
             if path == "/api/raise":
                 target = int((query.get("target") or ["0"])[0] or 0)
-                show_palette(target or None)
-                self._json(200, {"ok": True})
+                requested = (query.get("view") or [""])[0]
+                if requested in {"suno", "prompts", "saved"}:
+                    PANEL["navigation"] = {"view": requested, "id": uuid.uuid4().hex}
+                opened = show_palette(target or None)
+                self._json(200 if opened else 503, {"ok": bool(opened), "error": None if opened else "The library window did not open. Retry from its shortcut."})
                 return
             if path == "/api/hide":
                 hide_palette()
@@ -2557,6 +2630,12 @@ def start_panel_server() -> None:
             path = urlparse(self.path).path
             try:
                 payload = self._body()
+                if path.startswith("/api/library/"):
+                    operation = path.rsplit("/", 1)[-1]
+                    if operation not in {"collection", "tags", "member", "import", "preview"}:
+                        raise ValueError("Unknown private library operation.")
+                    self._json(200, library_call(operation, payload))
+                    return
                 if path == "/api/backup":
                     result = clip_integrations.backup_cycle(paths()["root"])
                     if result["state"] != "complete":
@@ -2633,7 +2712,7 @@ def start_panel_server() -> None:
     PANEL["port"] = int(server.server_address[1])
     paths()["data"].mkdir(parents=True, exist_ok=True)
     panel_file().write_text(
-        json.dumps({"port": PANEL["port"], "token": PANEL["token"]}),
+        json.dumps({"port": PANEL["port"], "token": PANEL["token"], "window_title": PANEL["window_title"]}),
         encoding="utf-8",
     )
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -2672,7 +2751,7 @@ def launch_palette_window() -> int:
     return 0
 
 
-def show_palette(target: int | None = None) -> None:
+def show_palette(target: int | None = None) -> bool:
     if target:
         remember_target(int(target))
     else:
@@ -2685,9 +2764,10 @@ def show_palette(target: int | None = None) -> None:
         hwnd = launch_palette_window()
     if not hwnd:
         log("palette window did not open")
-        return
+        return False
     place_palette(hwnd, True)
     focus_window(hwnd)
+    return True
 
 
 def install_hotkey() -> int:
@@ -2787,16 +2867,18 @@ def pump_hotkey(hwnd: int) -> None:
             user32.DispatchMessageW(ctypes.byref(message))
 
 
-def board() -> int:
+def board(view: str = "") -> int:
     target = int(user32.GetForegroundWindow() or 0)
     state = panel_file()
     if state.is_file() and watcher_running():
         try:
             saved = json.loads(state.read_text(encoding="utf-8"))
             url = f"http://127.0.0.1:{int(saved['port'])}/api/raise?k={saved['token']}&target={target}"
+            if view in {"suno", "prompts", "saved"}:
+                url += "&view=" + view
             import urllib.request
 
-            with urllib.request.urlopen(url, timeout=2) as response:
+            with urllib.request.urlopen(url, timeout=12) as response:
                 if response.status == 200:
                     return 0
         except Exception:
@@ -2842,6 +2924,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("fabric", help="List curated prompt-fabric entries")
     sub.add_parser("board", help="Open the clipboard window")
+    sub.add_parser("music", help="Open the music prompt workspace")
+    library = sub.add_parser("library", help="Private collections, labels and portable handoffs")
+    library.add_argument("action", choices=("list", "create", "tag", "assign", "unassign", "suggest", "export", "import"))
+    library.add_argument("--id", type=int)
+    library.add_argument("--collection")
+    library.add_argument("--name")
+    library.add_argument("--description", default="")
+    library.add_argument("--mode", choices=("manual", "smart"), default="manual")
+    library.add_argument("--query")
+    library.add_argument("--tags", nargs="*", default=[])
+    library.add_argument("--source", choices=("user", "agent", "local-rule"), default="user")
+    library.add_argument("--reason", default="Edited through the local CLI")
+    library.add_argument("--file", type=Path)
     status_cmd = sub.add_parser("status")
     status_cmd.add_argument("--json",action="store_true")
     doctor = sub.add_parser("doctor",help="Read collector, database, export and backup health")
@@ -2883,6 +2978,38 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     command = args.cmd
+    if command == "music":
+        return board("suno")
+    if command == "library":
+        if args.action == "export":
+            if args.file is None:
+                raise ValueError("Choose a new private --file destination.")
+            packet = library_call("export", {"query": args.query or "use:suno", "collection": args.collection})
+            with args.file.open("x", encoding="utf-8", newline="\n") as handle:
+                handle.write(json.dumps(packet, ensure_ascii=False))
+                handle.flush()
+                os.fsync(handle.fileno())
+            emit("Saved a private, unencrypted library handoff. Transfer through your approved encrypted channel.")
+            return 0
+        if args.action == "import":
+            if args.file is None:
+                raise ValueError("Choose a private handoff --file.")
+            with args.file.open("r", encoding="utf-8-sig") as handle:
+                raw = handle.read(clip_library.MAX_BUNDLE + 1)
+            if len(raw.encode("utf-8")) > clip_library.MAX_BUNDLE:
+                raise ValueError("The handoff exceeds 450 KB.")
+            result = library_call("import", {"bundle": json.loads(raw)})
+        elif args.action == "create":
+            result = library_call("collection", {"name": args.name, "description": args.description,
+                "mode": args.mode, "query": args.query or ""})
+        elif args.action == "tag":
+            result = library_call("tags", {"id": args.id, "tags": args.tags, "source": args.source, "reason": args.reason})
+        elif args.action in {"assign", "unassign"}:
+            result = library_call("member", {"id": args.id, "collection": args.collection, "present": args.action == "assign"})
+        else:
+            result = library_call({"list": "list", "suggest": "suggestions"}[args.action], {"id": args.id})
+        emit(json.dumps(result, ensure_ascii=False))
+        return 0
     if command in (None, "recent"):
         return recent(getattr(args, "kind", None), getattr(args, "limit", 20))
     if command == "search":

@@ -12,13 +12,13 @@ import sqlite3
 from datetime import datetime, timezone, timedelta
 import uuid
 
-VERSION = "2026.10.31.5"
-SCHEMA_VERSION = 2
+VERSION = "2026.10.31.6"
+SCHEMA_VERSION = 3
 STATES = {"active", "saved", "resolved", "archived"}
 MUSIC = re.compile(r"(?i)\b(piano|strings|guitar|synth|orchestral|cinematic|ambient|lo-fi|techno|trance|house|drums|vocals?|instrumental|chorus|verse|suno)\b")
 BPM = re.compile(r"(?i)\b(\d{2,3})\s*bpm\b")
 STRUCTURE = re.compile(r"(?im)^\s*\[(intro|verse|chorus|bridge|outro|drop|instrumental)(?:[^\]]*)\]")
-FILTER = re.compile(r'(?<!\S)(app|use|type|state|after|before|on|device):(?:"([^"]*)"|(\S+))')
+FILTER = re.compile(r'(?<!\S)(app|use|type|state|after|before|on|device|tag|vibe):(?:"([^"]*)"|(\S+))')
 
 
 def now() -> str:
@@ -39,38 +39,42 @@ def atomic_text(path: Path, content: str) -> None:
 
 
 def migrate(conn: sqlite3.Connection, device: str) -> None:
-    if conn.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version >= SCHEMA_VERSION:
         return
-    columns = {r[1] for r in conn.execute("PRAGMA table_info(clips)")}
-    for name, declaration in (
-        ("uid", "TEXT"), ("use_case", "TEXT NOT NULL DEFAULT ''"),
-        ("state", "TEXT NOT NULL DEFAULT 'active'"),
-    ):
-        if name not in columns:
-            conn.execute(f"ALTER TABLE clips ADD COLUMN {name} {declaration}")
-    conn.execute("CREATE TABLE IF NOT EXISTS clip_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
-    conn.execute("INSERT OR IGNORE INTO clip_meta VALUES('store_id',?)", (uuid.uuid4().hex,))
-    store_id = conn.execute("SELECT value FROM clip_meta WHERE key='store_id'").fetchone()[0]
-    conn.execute("UPDATE clips SET uid=? || ':' || id WHERE uid IS NULL", (store_id,))
-    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS clips_uid ON clips(uid)")
-    conn.execute("CREATE INDEX IF NOT EXISTS clips_library ON clips(state,use_case,id)")
-    conn.execute("""CREATE TABLE IF NOT EXISTS clip_occurrences(
-        event_id TEXT PRIMARY KEY,clip_id INTEGER NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
-        captured_at TEXT NOT NULL,source_app TEXT,source_title TEXT,device TEXT)""")
-    conn.execute("CREATE INDEX IF NOT EXISTS occurrence_dates ON clip_occurrences(clip_id,captured_at)")
-    conn.execute("""INSERT OR IGNORE INTO clip_occurrences
-        SELECT uid || ':initial',id,captured_at,source_app,source_title,device FROM clips""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS clip_jobs(
-        clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,
-        status TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,
-        next_attempt REAL NOT NULL DEFAULT 0,error TEXT)""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS clip_images(
-        clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,png BLOB NOT NULL)""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS clip_promotions(
-        clip_uid TEXT NOT NULL,destination TEXT NOT NULL,path TEXT NOT NULL,
-        created_at TEXT NOT NULL,PRIMARY KEY(clip_uid,destination))""")
-    # Historical hit counts do not identify individual dates. Preserve the aggregate,
-    # and add only the one occurrence for which a source timestamp exists.
+    if version < 2:
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(clips)")}
+        for name, declaration in (
+            ("uid", "TEXT"), ("use_case", "TEXT NOT NULL DEFAULT ''"),
+            ("state", "TEXT NOT NULL DEFAULT 'active'"),
+        ):
+            if name not in columns:
+                conn.execute(f"ALTER TABLE clips ADD COLUMN {name} {declaration}")
+        conn.execute("CREATE TABLE IF NOT EXISTS clip_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
+        conn.execute("INSERT OR IGNORE INTO clip_meta VALUES('store_id',?)", (uuid.uuid4().hex,))
+        store_id = conn.execute("SELECT value FROM clip_meta WHERE key='store_id'").fetchone()[0]
+        conn.execute("UPDATE clips SET uid=? || ':' || id WHERE uid IS NULL", (store_id,))
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS clips_uid ON clips(uid)")
+        conn.execute("CREATE INDEX IF NOT EXISTS clips_library ON clips(state,use_case,id)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS clip_occurrences(
+            event_id TEXT PRIMARY KEY,clip_id INTEGER NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
+            captured_at TEXT NOT NULL,source_app TEXT,source_title TEXT,device TEXT)""")
+        conn.execute("CREATE INDEX IF NOT EXISTS occurrence_dates ON clip_occurrences(clip_id,captured_at)")
+        conn.execute("""INSERT OR IGNORE INTO clip_occurrences
+            SELECT uid || ':initial',id,captured_at,source_app,source_title,device FROM clips""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS clip_jobs(
+            clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,
+            status TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,
+            next_attempt REAL NOT NULL DEFAULT 0,error TEXT)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS clip_images(
+            clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,png BLOB NOT NULL)""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS clip_promotions(
+            clip_uid TEXT NOT NULL,destination TEXT NOT NULL,path TEXT NOT NULL,
+            created_at TEXT NOT NULL,PRIMARY KEY(clip_uid,destination))""")
+        # Historical hit counts do not identify individual dates. Preserve the aggregate,
+        # and add only the one occurrence for which a source timestamp exists.
+    import clip_library
+    clip_library.migrate(conn)
     conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     conn.commit()
 
@@ -100,6 +104,9 @@ def parse_query(query: str) -> tuple[str, dict]:
     filters = {}
     def take(match):
         key = match[1]
+        if key == "tag":
+            filters.setdefault("tag", []).append(match[2] if match[2] is not None else match[3])
+            return " "
         if key in filters:
             raise ValueError(f"Use {key}: only once.")
         filters[key] = match[2] if match[2] is not None else match[3]
@@ -138,6 +145,23 @@ def query_rows(conn, query: str, kind: str | None = None, limit: int = 100):
             clauses.append("(" + " OR ".join(f"lower({field}) LIKE ? ESCAPE '\\'" for field in fields) + ")")
             value = filters[key].lower().replace("\\","\\\\").replace("%","\\%").replace("_","\\_")
             args.extend(["%" + value + "%"] * len(fields))
+    if filters.get("tag"):
+        import clip_library
+        for label in filters["tag"]:
+            clauses.append("EXISTS(SELECT 1 FROM library_tags t WHERE t.clip_id=c.id AND t.label=?)")
+            args.append(clip_library.tag_name(label))
+    if filters.get("vibe"):
+        import clip_library
+        group = conn.execute("SELECT mode FROM library_collections WHERE id=?", (clip_library.identity(filters["vibe"]),)).fetchone()
+        if group is None:
+            raise ValueError("Collection not found.")
+        if group[0] == "manual":
+            clauses.append("EXISTS(SELECT 1 FROM library_members m WHERE m.clip_id=c.id AND m.collection_id=?)")
+            args.append(filters["vibe"])
+        else:
+            ids = clip_library.selected_ids(conn, filters["vibe"])
+            clauses.append("c.id IN (" + ",".join("?" for _ in ids) + ")" if ids else "0")
+            args.extend(ids)
     dates, date_args = [], []
     if "on" in filters:
         if "after" in filters or "before" in filters:

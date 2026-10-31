@@ -9,6 +9,9 @@ colors:
   gold: "#f0c87e"
   signal: "#82d8e6"
   reading: "#111620"
+  dialog: "#121a27"
+  primary-ink: "#17130b"
+  danger: "#ffb4ac"
   selected: "rgba(201,161,92,.13)"
 typography:
   title:
@@ -17,6 +20,23 @@ typography:
     fontWeight: 600
     lineHeight: 1.2
     letterSpacing: "-.035em"
+  compact-title:
+    fontSize: "21px"
+  reader-title:
+    fontSize: "23px"
+  section-title:
+    fontSize: "20px"
+  compact-section-title:
+    fontSize: "17px"
+  brand:
+    fontSize: "16px"
+  dialog-section:
+    fontSize: "15px"
+  row-title:
+    fontSize: "13px"
+  code:
+    fontFamily: Cascadia Code, Consolas, monospace
+    fontSize: "12px"
   body:
     fontFamily: '"Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif'
     fontSize: "14px"
@@ -25,6 +45,15 @@ typography:
   metadata:
     fontSize: "12px"
 rounded:
+  square: "0"
+  key: "4px"
+  chip: "5px"
+  small: "8px"
+  row: "11px"
+  search: "12px"
+  compact-surface: "14px"
+  popover: "16px"
+  circle: "50%"
   control: "10px"
   surface: "20px"
 spacing:
@@ -42,7 +71,7 @@ components:
 
 # Design system: Starlight Clipboard
 
-Author: Codex. Created: 2026-10-31. Revision: v1. Review state: locally reviewed beta; independent acceptance pending.
+Author: Codex. Created: 2026-10-31. Revision: v2. Review state: locally reviewed beta; independent acceptance pending.
 
 ## Overview
 
@@ -79,6 +108,8 @@ Primary buttons are warm gold with dark text. Secondary actions use a restrained
 The reader separates Paste and Copy from Save prompt, File in memory and Archive. An excluded payload disables the actions that could expose or file it. The shield panel reports actual capture and integration state. Suno remains a candidate classification until a separate submission receipt exists.
 
 Frequent keyboard navigation has no animation. Fine-pointer hover changes color over 140ms with `cubic-bezier(.23,1,.32,1)`. Reduced motion removes transitions and animation. Touch does not use double-click to paste.
+
+Music adds a wrapping vibe selector and native modal dialogs. The dialog width is at most 560px and stays 16px inside the viewport. Manual collections retain explicit membership; smart collections retain a search. Tags show user/agent/local-rule provenance. Escape returns focus and keeps unfinished drafts. Transfer validates a private handoff before enabling import.
 
 ## Do's and Don'ts
 
