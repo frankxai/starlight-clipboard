@@ -99,14 +99,16 @@ async function health(){
 }
 async function act(path,extra={}){
  const item=current();if(!item)return;
- try{await request(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:item.id,...extra})});if(path==="/api/paste")return;await load();
- message(path==="/api/brain"?"Filed one local note. Memory-index retrieval is a separate check.":path==="/api/book"?"Saved privately to your prompt book.":"Updated the selected capture.")}
+ const button=path==="/api/brain"?$("brain"):null;if(button)button.disabled=true;
+ try{const result=await request(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:item.id,...extra})});if(path==="/api/paste")return;await load();
+ message(path==="/api/brain"?(result.state==="recall_verified"?"Filed in memory and found through the shared agent reader.":result.state==="stored_pending_recall"?"Stored in canonical memory. Shared retrieval still needs verification.":"Filed one local note; shared memory is not configured."):path==="/api/book"?"Saved privately to your prompt book.":"Updated the selected capture.")}
  catch(error){message(error.message,true)}
+ finally{if(button)syncActions()}
 }
 document.querySelectorAll("[data-view]").forEach(button=>button.addEventListener("click",()=>{view=button.dataset.view;document.querySelectorAll("[data-view]").forEach(b=>b.setAttribute("aria-pressed",String(b===button)));load()}));
 $("paste").onclick=()=>act("/api/paste");$("copy").onclick=()=>act("/api/copy");$("pin").onclick=()=>act("/api/pin",{pinned:current()?.pinned?0:1});
 $("book").onclick=()=>act("/api/book",{scope:"starlight"});$("brain").onclick=()=>act("/api/brain");$("archive").onclick=()=>act("/api/state",{state:current()?.state==="archived"?"active":"archived"});
-$("backup").onclick=async()=>{$("backup").disabled=true;try{const data=await request("/api/backup",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});message("Verified local snapshot: "+data.snapshot);health()}catch(error){message(error.message,true)}finally{$("backup").disabled=false}};
+$("backup").onclick=async()=>{$("backup").disabled=true;$("backup").textContent="Backing up…";try{const data=await request("/api/backup",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});message(data.encrypted?"Encrypted snapshot saved to the configured repository. Off-device recovery is a separate check.":"Verified local snapshot: "+data.snapshot);health()}catch(error){message(error.message,true)}finally{$("backup").disabled=false;$("backup").textContent="Back up"}};
 function closeIdea(){$("idea").hidden=true;$("new-idea").setAttribute("aria-expanded","false");input.focus()}
 $("new-idea").onclick=()=>{$("idea").hidden=false;$("new-idea").setAttribute("aria-expanded","true");$("idea-text").focus()};$("cancel-idea").onclick=closeIdea;
 $("idea").onsubmit=async event=>{event.preventDefault();const text=$("idea-text").value;if(!text.trim()){message("Write an idea before saving.",true);return}const button=$("idea").querySelector('[type=submit]');button.disabled=true;

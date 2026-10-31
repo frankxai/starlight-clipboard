@@ -63,6 +63,10 @@ Archive changes visibility. Restore returns an archived capture to Recent. Recor
 | `clips resolve 12` | Mark handled while preserving the record |
 | `clips doctor --json` | Read capture, export and backup health without printing payloads |
 | `clips backup` | Create a consistent local snapshot with checksums |
+| `clips integrations --memory --backup` | Bind the existing canonical memory and local encrypted backup installations |
+| `clips integrations` | Inspect integration and daily-backup status |
+| `clips backup --encrypted` | Save a consistent snapshot to the configured existing restic repository |
+| `clips recover-encrypted <snapshot-id> --target <new-directory>` | Verify and restore one encrypted Clipboard snapshot into a new store |
 | `clips restore <snapshot-folder> --target <new-directory>` | Verify and restore into a new directory |
 | `clips export --query "use:suno" --destination <new-file.jsonl>` | Export up to 999 matching private text records |
 | `clips reindex` | Refresh deterministic music hints and retry derived-file exports |
@@ -89,7 +93,15 @@ Music hints use local rules. A short style string with instruments and BPM can b
 
 Prompt books retain the original capture, stable source UID and source date. Repeated promotion is idempotent for that source. Public `frankxai/prompt-library` remains a separate reviewed corpus; nothing is pushed there.
 
-`clips remember` writes one source-linked Markdown atom. Set `STARLIGHT_VAULT` to an appropriate general memory vault if needed. Sealed `private/` or private-vault paths are refused, including resolved links. Writing an atom does not prove a shared index refreshed or that an agent retrieved it. The interface states that distinction.
+With canonical memory configured, `clips remember` uses the existing Starlight Memory writer with its bound vault and tenant, then verifies the source UID, content hash and retained text through the authenticated shared reader. The writer starts only for this operation and exits afterward; embeddings stay off. The interface distinguishes verified recall from a stored note awaiting verification. Receipts prevent duplicate filing, including uncertain write outcomes. Source changes require review and rebinding. Notes over 12,000 characters require a shorter selection; their full source remains in the archive.
+
+Without that binding, `clips remember` exports one local Markdown atom beneath the Clipboard runtime. An explicit `STARLIGHT_VAULT` can select a permitted export destination. It does not automatically write into the canonical repository. Sealed `private/` or private-vault paths are refused, including resolved links. A local export does not prove shared indexing or agent retrieval.
+
+Run `clips integrations --memory --backup` to bind installations that already exist on this machine. The memory reader must report the same canonical vault and tenant as the writer. The backup binding uses existing `STARLIGHT_RESTIC_REPO` and `STARLIGHT_RESTIC_PASSWORD_FILE` references. Credential contents are never copied into configuration. This command creates no account, repository, global MCP registration or scheduled task and refuses remote backup setup.
+
+After backup binding, the existing collector attempts a consistent snapshot and encrypted copy once per day while running. A failed attempt is recorded and retried no more than once per hour. The Back up button runs the same operation. Retention is manual; no snapshot is pruned. Existing writer locks are preserved. Check `clips doctor --json` for the last cycle and encrypted snapshot.
+
+Encrypted recovery accepts only a snapshot tagged by Clipboard, restores its leaf subtree into isolated staging with restic content verification, checks the Clipboard manifest and SQLite integrity, and requires a new target. This avoids replaying Windows ancestor directory permissions. Interactive restore is bounded to 512 MiB; larger archives need the existing backup operator. An encrypted repository on this computer still requires a separately configured off-device destination and independent password custody for hardware-loss recovery.
 
 The utility window uses its own profile under ui-profile with browser sync and extensions disabled; it does not use your signed-in browser profile.
 
@@ -99,7 +111,7 @@ The local API binds only to 127.0.0.1 on a random port and requires a per-run ca
 
 Keep this collector and its data local. SIS/local_core owns trusted-memory identity and promotion policy. Existing shared memory services provide agent retrieval. Notion and Drive can receive reviewed projections; they are not capture dependencies.
 
-Cloudflare Clef/Clairic, optional browser submission receipts, encrypted multi-device synchronization, shared-plane registration and a Rust/Tauri comparison remain separate implementation stages in [issue #4](https://github.com/frankxai/starlight-clipboard/issues/4). Existing legacy peer snapshots are not a verified lossless synchronization protocol.
+Cloudflare Clef/Clairic, optional browser submission receipts, encrypted multi-device synchronization, a pooled raw-Clipboard MCP backend and a Rust/Tauri comparison remain separate implementation stages in [issue #4](https://github.com/frankxai/starlight-clipboard/issues/4). Canonical memory filing and recall use the existing memory tools. Existing legacy peer snapshots are not a verified lossless synchronization protocol.
 
 The installed Context7 and capability inventories remain owned by their existing systems. This application does not install another global model gateway, architecture catalog, agent runtime or scheduler.
 
@@ -112,4 +124,4 @@ py -3 clip.py self-test
 
 Tests use isolated temporary stores and fixtures, including recovery, protected sources, long originals, archive/search, full-text API previews, authorization, sequence suppression and failed exports. They do not certify real Windows clipboard coverage, reboot recovery, off-device backup, UI rendering or production deployment.
 
-Implementation author: Codex · 2026-10-31 · v1. Exact source/review/install receipts belong with the task evidence; local private data never belongs in Git.
+Implementation author: Codex · 2026-10-31 · v2. Exact source/review/install receipts belong with the task evidence; local private data never belongs in Git.

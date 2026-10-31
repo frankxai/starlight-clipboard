@@ -18,6 +18,7 @@ import threading
 import time
 import uuid
 import clip_store
+import clip_integrations
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from ctypes import wintypes
@@ -1436,6 +1437,7 @@ def health_snapshot() -> dict:
         except (OSError,ValueError):
             pass
     info["known_capture_gaps"] = PANEL.get("capture_gaps",0)
+    info["integrations"] = clip_integrations.status(location["root"])
     return info
 
 
@@ -1497,6 +1499,12 @@ def watch() -> int:
                 process_pending(limit=8)
                 last_export = time.monotonic()
             if time.monotonic()-last_housekeeping > 10:
+                root = paths()["root"]
+                worker = PANEL.get("backup_worker")
+                if clip_integrations.status(root).get("daily_backup_enabled") and not (worker and worker.is_alive()) and clip_integrations.backup_due(root):
+                    worker = threading.Thread(target=clip_integrations.backup_cycle, args=(root,), name="clipboard-backup", daemon=False)
+                    PANEL["backup_worker"] = worker
+                    worker.start()
                 clip_store.atomic_text(paths()["data"]/"heartbeat.json",
                     json.dumps({"pid":os.getpid(),"observed_at":clip_store.now(),**health_snapshot()}))
                 last_housekeeping = time.monotonic()
@@ -1925,13 +1933,14 @@ def vault_atoms() -> Path:
     override = os.environ.get("STARLIGHT_VAULT")
     if override:
         return clip_store.safe_vault(Path(override)) / "atoms"
-    candidate = Path(r"C:\Users\frank\starlight\repos\starlight-memory-vault")
-    if candidate.is_dir():
-        return candidate / "atoms"
     return paths()["root"] / "memory-atoms"
 
 
 def remember_one(clip_id: int) -> int:
+    if clip_integrations.load_settings(paths()["root"]).get("memory", {}).get("enabled"):
+        result = file_memory(clip_id)
+        emit(json.dumps(result, ensure_ascii=False))
+        return 0
     conn = connect()
     try:
         init_db(conn)
@@ -2006,6 +2015,22 @@ def remember_one(clip_id: int) -> int:
             existing.write_text(text.replace("second_brain: hold", "second_brain: filed", 1), encoding="utf-8")
     emit(str(path))
     return 0
+
+
+def file_memory(clip_id: int) -> dict:
+    root = paths()["root"]
+    if not clip_integrations.load_settings(root).get("memory", {}).get("enabled"):
+        return {"ok": remember_one(clip_id) == 0, "state": "filed_local", "recall_verified": False}
+    conn = connect()
+    try:
+        init_db(conn)
+        row = fetch(conn, clip_id)
+        if row is None:
+            raise ValueError("The source capture does not exist.")
+        result = clip_integrations.remember(root, row)
+    finally:
+        conn.close()
+    return {"ok": True, **result}
 
 
 def show_fabric() -> int:
@@ -2513,8 +2538,11 @@ def start_panel_server() -> None:
             try:
                 payload = self._body()
                 if path == "/api/backup":
-                    folder = clip_store.backup(paths()["root"])
-                    self._json(200,{"ok":True,"snapshot":folder.name})
+                    result = clip_integrations.backup_cycle(paths()["root"])
+                    if result["state"] != "complete":
+                        raise ValueError(result["error"])
+                    self._json(200,{"ok":True,"snapshot":Path(result["local_snapshot"]).name,
+                                   "encrypted":result.get("encrypted")})
                     return
                 if path == "/api/add":
                     text = payload.get("text")
@@ -2567,7 +2595,10 @@ def start_panel_server() -> None:
                 self._json(200, {"ok": promote(clip_id, scope) == 0})
                 return
             if path == "/api/brain":
-                self._json(200, {"ok": remember_one(clip_id) == 0})
+                try:
+                    self._json(200, file_memory(clip_id))
+                except (ValueError, OSError, TimeoutError) as error:
+                    self._json(503, {"ok":False,"error":str(error) or "Memory filing needs attention. The source capture is retained."})
                 return
             if path == "/api/delete":
                 self._json(200, {"ok": set_state(clip_id,"archived") == 0})
@@ -2794,6 +2825,13 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--json",action="store_true")
     backup_cmd = sub.add_parser("backup",help="Create a consistent private local snapshot")
     backup_cmd.add_argument("--destination",type=Path)
+    backup_cmd.add_argument("--encrypted", action="store_true", help="Use the existing configured restic repository")
+    recovery = sub.add_parser("recover-encrypted", help="Restore an explicit encrypted snapshot into a new store")
+    recovery.add_argument("snapshot")
+    recovery.add_argument("--target", type=Path, required=True)
+    integration = sub.add_parser("integrations", help="Inspect or bind the existing memory and local backup installations")
+    integration.add_argument("--memory", action="store_true")
+    integration.add_argument("--backup", action="store_true")
     restore_cmd = sub.add_parser("restore",help="Verify and restore a snapshot into a new directory")
     restore_cmd.add_argument("snapshot",type=Path)
     restore_cmd.add_argument("--target",type=Path,required=True)
@@ -2864,7 +2902,17 @@ def main(argv: list[str] | None = None) -> int:
                 emit(f"{key}: {value}")
         return 0
     if command == "backup":
+        if args.encrypted:
+            emit(json.dumps(clip_integrations.encrypted_backup(paths()["root"]), ensure_ascii=False))
+            return 0
         emit(str(clip_store.backup(paths()["root"],args.destination)))
+        return 0
+    if command == "recover-encrypted":
+        emit(str(clip_integrations.recover_encrypted(paths()["root"], args.snapshot, args.target)))
+        return 0
+    if command == "integrations":
+        result = clip_integrations.configure(paths()["root"], memory=args.memory, backup=args.backup) if args.memory or args.backup else clip_integrations.status(paths()["root"])
+        emit(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     if command == "restore":
         emit(str(clip_store.restore(args.snapshot,args.target)))
@@ -2904,4 +2952,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except (ValueError, OSError, TimeoutError) as error:
+        emit(str(error) or "The operation needs attention. Source captures remain available.")
+        raise SystemExit(1)

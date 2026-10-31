@@ -16,7 +16,7 @@ $python = (& py -3 -c 'import sys; print(sys.executable)').Trim()
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $python)) { throw 'Python 3 is required.' }
 $pythonw = Join-Path (Split-Path $python) 'pythonw.exe'
 if (-not (Test-Path -LiteralPath $pythonw)) { throw 'The matching pythonw.exe is missing.' }
-$files = @('clip.py', 'clip_store.py', 'board.html', 'README.md')
+$files = @('clip.py', 'clip_store.py', 'clip_integrations.py', 'board.html', 'README.md')
 $hashes = [ordered]@{}
 foreach ($file in $files) {
     $hashes[$file] = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $PSScriptRoot $file)).Hash.ToLower()
