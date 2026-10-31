@@ -1,38 +1,115 @@
 # Starlight Clipboard
 
-A Windows clipboard history for people who keep prompts. It listens beside the Windows clipboard. It does not replace Win+V.
+A private Windows clipboard archive with a shortcut palette and searchable prompt library. It listens beside Windows clipboard history and keeps Win+V available.
 
-What you copy stays on the Windows clipboard. This tool stores a local searchable copy, keeps pictures, marks instructions as prompts, and can file one keeper into a private prompt book or one note in a markdown vault on the same machine.
+Open **Starlight Clipboard** from the Start menu, or press **Ctrl+Alt+V** while capture is running. Your copies stay on this PC. Cloud inference and external publishing are disabled.
 
-## Two machines
+## Install
 
-Clone this repo on each machine and run `clip.py watch`. Each machine keeps its own database under `%USERPROFILE%\.starlight\clipboard-index`. That database is not in git. Do not commit it.
+Requires Windows, PowerShell 7 and Python 3.10 or newer. No pip packages, Node build, account, or API key is required.
 
-To move a non-secret copy to the other machine, copy a file from `devices\out` on the first machine into `devices\peers` on the second. The collector imports those files. Secrets are not written to `devices\out`.
+```powershell
+./install.ps1 -WhatIf
+./install.ps1 -Start
+```
 
-The public prompt book is [frankxai/prompt-library](https://github.com/frankxai/prompt-library). Saving a prompt here does not push it there. A private entry stays in `%USERPROFILE%\.starlight\prompt-fabric` until you choose to publish a reviewed pattern.
+The installer takes a consistent pre-upgrade database snapshot, preserves previous launchers, verifies the copied release with its self-test, migrates existing records, and installs an immutable release under:
+
+```text
+%USERPROFILE%/.starlight/clipboard-index/runtime/releases/<content-hash>/
+```
+
+Your existing database remains at `data/clips.sqlite` under the same runtime root. Private prompt books remain in `%USERPROFILE%/.starlight/prompt-fabric`. The existing `%USERPROFILE%/.local/bin/clips.cmd` opens the selected release. Start-menu shortcuts open the library or start capture.
+
+The installer refuses to replace a running collector. Use `clips stop` for the known Clipboard process before upgrading. It never kills a browser or another task.
+
+Starting automatically at login is a separate, explicit option:
+
+```powershell
+./install.ps1 -EnableStartup
+```
+
+This adds a per-user Startup shortcut. It does not register a service or scheduled task. Follow the operator's startup-approval policy before using that option.
+
+## Find and keep ideas
+
+The palette has Recent, Prompts, Suno candidates, Saved, Archive and All history views. Select a local date or use filters:
+
+```text
+use:suno after:2026-10-01 before:2026-11-01
+type:prompt app:chrome
+state:saved piano
+state:any on:2026-10-31
+device:my-pc
+```
+
+Dates are interpreted in the local Windows timezone. `after:` includes the start of the date; `before:` excludes it. `on:` selects one local calendar day. Free-text searches include archived content unless a state filter says otherwise.
+
+Arrow keys select; Enter pastes; Ctrl+Enter saves the selected text to the private prompt book; Ctrl+P toggles pin; Escape hides the palette. Buttons also support touch and keyboard navigation. Save idea writes a note directly without replacing the system clipboard.
+
+Archive changes visibility. Restore returns an archived capture to Recent. Records are no longer automatically deleted because of age or row count. Clipboard copies of files preserve their paths, not the referenced files themselves.
 
 ## Commands
 
-Open the palette with Ctrl+Alt+V after the collector is running.
+| Command | Purpose |
+| --- | --- |
+| `clips` | Show recent captures |
+| `clips search use:suno piano` | Search content and metadata |
+| `clips add "An idea to keep"` | Save an idea explicitly |
+| `clips prompts` | List prompt candidates |
+| `clips promote 12 --scope starlight` | Save selected text to a private prompt book |
+| `clips remember 12` | File one note in the permitted local memory vault |
+| `clips archive 12` / `clips unarchive 12` | Hide or restore a capture |
+| `clips resolve 12` | Mark handled while preserving the record |
+| `clips doctor --json` | Read capture, export and backup health without printing payloads |
+| `clips backup` | Create a consistent local snapshot with checksums |
+| `clips restore <snapshot-folder> --target <new-directory>` | Verify and restore into a new directory |
+| `clips export --query "use:suno" --destination <new-file.jsonl>` | Export up to 999 matching private text records |
+| `clips reindex` | Refresh deterministic music hints and retry derived-file exports |
+| `clips watch` / `clips stop` | Start or gracefully stop capture |
+| `clips self-test` | Run isolated built-in checks |
 
-Type `>` for commands: saved prompts, pinned copies, save to the Starlight prompt book, and file one copy in the second brain.
+Backups are private, unencrypted local snapshots. They protect against an upgrade or database error, not loss of the computer. Copy a completed snapshot through your approved encrypted backup system for off-device recovery. A live SQLite database/WAL must not be shared between machines through a file-sync folder.
 
-Pictures are kept when the copy includes a PNG or a bitmap. Paste puts the picture back. If an older picture says it was not kept, copy it again.
+Restore refuses an existing destination and checks the manifest and database before creating the new store. Source originals and transactional image payloads survive; Markdown sidecars are rebuildable caches. No old snapshot is automatically deleted.
 
-The collector waits before it reads, and it waits longer while the Windows key is down or the Windows clipboard window is open. It does not register Win+V.
+## Capture and privacy
 
-| Command | What it does |
-|---|---|
-| `clips` | Newest copies |
-| `clips search words` | Full-text search |
-| `clips prompts` | Copies marked as prompts |
-| `clips promote 12 --scope starlight` | File one copy in the local prompt book |
-| `clips remember 12` | File that one copy as a private note |
-| `clips watch` | Run the collector in this window |
+Capture uses native Windows notifications and attempts a bounded snapshot promptly. Locked clipboard data is retried only while its sequence is unchanged; a known failed or superseded retry is reported. Windows notifications do not provide a historical payload feed: periods while stopped and content overwritten before a read remain possible gaps.
 
-A prompt is text that tells an agent what to do: a role, instructions, or a long ask. The palette shows that reason on its own line. Ordinary sentences stay text. Keys are logged as events with the value removed. `clips remember` refuses a secret and a picture with no text. Set `STARLIGHT_VAULT` to a markdown vault if the note should land in `atoms` there.
+Text up to one million characters is retained. Larger values are marked incomplete. Pictures use supported PNG/bitmap formats. Native protected-history markers and password-manager sources are excluded. Secret patterns are redacted before storage, and rich HTML is independently checked. Partial secret redactions discard the associated HTML and picture so hidden representations do not preserve the excluded text. These rules cannot identify every possible sensitive value or screenshot.
 
-## What this is not
+Each new occurrence of a repeated consecutive payload keeps its timestamp. Historical hit counts remain aggregates; migration does not invent lost historical dates. The SQLite transaction includes the capture, occurrence, transactional picture and pending export job. Sidecar failures leave a retryable job and the committed original. WAL uses full synchronous durability.
 
-Arcanea canon and the public prompt library are separate. The second brain receives one note when you use `clips remember` or the palette command. Nothing else is imported, and nothing is published.
+The existing terminal-wrap repair stores the eligible original before changing the pasted representation. Self-paste suppression matches a Windows clipboard sequence, so it does not ignore unrelated copies during an arbitrary time window.
+
+## Prompts, Suno and memory
+
+Music hints use local rules. A short style string with instruments and BPM can be a prompt candidate. The Suno label suggests a use case; it does not prove where a prompt was submitted or that it produced a successful song. Missing BPM stays unknown. No model inference runs.
+
+Prompt books retain the original capture, stable source UID and source date. Repeated promotion is idempotent for that source. Public `frankxai/prompt-library` remains a separate reviewed corpus; nothing is pushed there.
+
+`clips remember` writes one source-linked Markdown atom. Set `STARLIGHT_VAULT` to an appropriate general memory vault if needed. Sealed `private/` or private-vault paths are refused, including resolved links. Writing an atom does not prove a shared index refreshed or that an agent retrieved it. The interface states that distinction.
+
+The utility window uses its own profile under ui-profile with browser sync and extensions disabled; it does not use your signed-in browser profile.
+
+The local API binds only to 127.0.0.1 on a random port and requires a per-run capability token. It checks Host and browser Origin, limits JSON request bodies, and uses no-store and restrictive response headers. A local token holder can read stored content; do not publish `data/panel.json` or expose the port.
+
+## Architecture and next stages
+
+Keep this collector and its data local. SIS/local_core owns trusted-memory identity and promotion policy. Existing shared memory services provide agent retrieval. Notion and Drive can receive reviewed projections; they are not capture dependencies.
+
+Cloudflare Clef/Clairic, optional browser submission receipts, encrypted multi-device synchronization, shared-plane registration and a Rust/Tauri comparison remain separate implementation stages in [issue #4](https://github.com/frankxai/starlight-clipboard/issues/4). Existing legacy peer snapshots are not a verified lossless synchronization protocol.
+
+The installed Context7 and capability inventories remain owned by their existing systems. This application does not install another global model gateway, architecture catalog, agent runtime or scheduler.
+
+## Verification
+
+```powershell
+py -3 -m unittest discover -s tests -v
+py -3 clip.py self-test
+```
+
+Tests use isolated temporary stores and fixtures, including recovery, protected sources, long originals, archive/search, full-text API previews, authorization, sequence suppression and failed exports. They do not certify real Windows clipboard coverage, reboot recovery, off-device backup, UI rendering or production deployment.
+
+Implementation author: Codex · 2026-10-31 · v1. Exact source/review/install receipts belong with the task evidence; local private data never belongs in Git.

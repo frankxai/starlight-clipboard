@@ -16,6 +16,8 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
+import clip_store
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from ctypes import wintypes
@@ -34,7 +36,7 @@ FABRIC_BOOKS = {
 }
 MUTEX_NAME = "Local\\StarlightClipboardIndex"
 MAX_READ = 1_000_000
-MAX_CHARS = 200_000
+MAX_CHARS = MAX_READ
 PREVIEW_CHARS = 240
 KEEP_DAYS = 90
 MAX_ROWS = 20_000
@@ -284,7 +286,8 @@ def connect() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=4000")
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA synchronous=FULL")
+    conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
@@ -320,6 +323,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE clips ADD COLUMN device TEXT")
     conn.execute("UPDATE clips SET device = ? WHERE device IS NULL OR device = ''", (this_device(),))
     conn.commit()
+    clip_store.migrate(conn, this_device())
 
 
 def redact(text: str) -> tuple[str, list[str]]:
@@ -343,6 +347,9 @@ def only_redactions(text: str) -> bool:
 
 
 def prompt_reason(text: str) -> str | None:
+    music = clip_store.annotation(text)
+    if music.get("use_case"):
+        return music["reason"]
     if PROMPT_LINE.search(text):
         return "It opens like an instruction to an agent."
     if ROLE_LINE.search(text):
@@ -398,7 +405,7 @@ def preview_of(text: str) -> str:
 
 
 def quote_yaml(value: str) -> str:
-    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return json.dumps(value, ensure_ascii=False)
 
 
 def write_sidecar(kind: str, clip_id: int, captured_at: str, app: str, title: str, body: str, labels: list[str]) -> str:
@@ -518,223 +525,179 @@ def import_peers() -> int:
     return added
 
 
-def ingest(
-    text: str | None,
-    *,
-    app: str = "",
-    title: str = "",
-    files: list[str] | None = None,
-    has_image: bool = False,
-    device: str | None = None,
-    html_bytes: bytes | None = None,
-    png_bytes: bytes | None = None,
-) -> dict | None:
-    files = files or []
-    png_bytes = trim_png(png_bytes) if png_bytes else None
+def ingest(text: str | None, *, app: str = "", title: str = "", files: list[str] | None = None,
+           has_image: bool = False, device: str | None = None, html_bytes: bytes | None = None,
+           png_bytes: bytes | None = None) -> dict | None:
     raw = (text or "").replace("\x00", "")
-    read_truncated = False
-    if len(raw) > MAX_READ:
-        raw = raw[:MAX_READ]
-        read_truncated = True
+    files = files or []
     if not raw.strip() and not files and not has_image:
         return None
-
+    truncated = len(raw) > MAX_READ
+    raw = raw[:MAX_READ]
+    title = redact(title)[0][:200]
     labels: list[str] = []
-    secret_only = False
-    truncated = read_truncated
-    kind = "text"
-    body: str | None
-    stored_for_hash: str | None
-    if sensitive_source(app, title) and raw.strip():
-        secret_only = True
-        kind = "secret"
-        body = None
-        labels = ["vault-app"]
-        stored_for_hash = None
+    body = None
+    png_bytes = trim_png(png_bytes) if png_bytes else None
+    if sensitive_source(app, title):
+        kind, labels = "secret", ["vault-app"]
+        png_bytes, files, html_bytes = None, [], None
     elif raw.strip():
-        redacted, labels = redact(raw)
-        if labels and only_redactions(redacted):
-            secret_only = True
-            kind = "secret"
-            body = None
-            stored_for_hash = None
+        body, labels = redact(raw)
+        if labels:
+            html_bytes, png_bytes = None, None
+        if labels and only_redactions(body):
+            kind, body = "secret", None
         else:
-            kind = classify_text(redacted)
-            if len(redacted) > MAX_CHARS:
-                body = redacted[:MAX_CHARS]
-                truncated = True
-            else:
-                body = redacted
-            stored_for_hash = redacted
+            kind = classify_text(body)
     elif files:
-        kind = "files"
-        shown = files[:100]
-        body = "\n".join(shown)
-        stored_for_hash = body
-        truncated = truncated or len(files) > 100
+        kind, body = "files", redact("\n".join(files[:100]))[0]
     else:
         kind = "image"
-        body = None
-        stored_for_hash = None
-
-    if kind == "image" and png_bytes:
-        digest = hashlib.sha256(png_bytes).hexdigest()
-    elif secret_only or kind == "image":
-        digest = hashlib.sha256(f"{kind}|{time.time_ns()}".encode("utf-8")).hexdigest()
-    else:
-        digest = hashlib.sha256((stored_for_hash or "").encode("utf-8")).hexdigest()
-
+    annotation = clip_store.annotation(body or "", title)
+    if kind == "text" and annotation.get("use_case"):
+        kind = "prompt"
     if kind == "secret":
-        preview = "[redacted:" + ",".join(labels or ["secret"]) + "]"
-        char_len = 0
+        preview, digest = "[redacted]", uuid.uuid4().hex
+        app, title = "", ""
     elif kind == "image":
-        preview = "Picture"
-        char_len = 0
+        preview = "Picture" if png_bytes else "Picture format unavailable"
+        digest = hashlib.sha256(png_bytes).hexdigest() if png_bytes else uuid.uuid4().hex
     else:
         preview = preview_of(body or "")
-        char_len = len(stored_for_hash or "")
-
-    extra: dict = {}
+        digest = hashlib.sha256(((body or "") + ("|image:" + hashlib.sha256(png_bytes).hexdigest() if png_bytes else "")).encode()).hexdigest()
+    extra = dict(annotation)
     if labels:
         extra["redactions"] = labels
     if truncated:
         extra["truncated"] = True
-    if has_image and kind != "image":
-        extra["image"] = True
-    if files and kind != "files":
-        extra["files"] = files[:20]
-    reason = prompt_reason(body or "") if kind == "prompt" and body else None
-    if reason:
-        extra["reason"] = reason
-    if html_bytes and kind not in {"secret", "image"} and len(html_bytes) <= 120_000:
-        extra["html_b64"] = __import__("base64").b64encode(html_bytes).decode("ascii")
-
-    captured_at = utc_now()
+        extra["capture_limit"] = MAX_READ
+    if kind == "prompt":
+        extra["reason"] = annotation.get("reason") or prompt_reason(body or "")
+    if html_bytes and not labels and kind not in {"secret", "image"} and len(html_bytes) <= 120_000:
+        # Recheck HTML independently: its hidden attributes can contain credentials.
+        html_text = html_bytes.decode("utf-8", errors="replace")
+        if not redact(html_text)[1]:
+            extra["html_b64"] = __import__("base64").b64encode(html_bytes).decode("ascii")
+    captured_at = clip_store.now()
     device_name = clip_device(app, device)
     conn = connect()
     try:
         init_db(conn)
-        suppress = paths()["suppress"]
-        if suppress.exists():
-            expected = suppress.read_text(encoding="ascii").strip()
-            if expected == "own" or (expected and expected == digest):
-                suppress.unlink(missing_ok=True)
-                return None
-        last = conn.execute(
-            "SELECT id, sha256, hit_count FROM clips ORDER BY id DESC LIMIT 1"
-        ).fetchone()
+        conn.execute("BEGIN IMMEDIATE")
+        last = conn.execute("SELECT id,sha256,hit_count FROM clips ORDER BY id DESC LIMIT 1").fetchone()
         if last and last["sha256"] == digest:
-            conn.execute(
-                "UPDATE clips SET hit_count = ?, last_seen_at = ? WHERE id = ?",
-                (int(last["hit_count"]) + 1, captured_at, int(last["id"])),
-            )
+            clip_id = int(last["id"])
+            conn.execute("UPDATE clips SET hit_count=hit_count+1,last_seen_at=? WHERE id=?", (captured_at, clip_id))
+            clip_store.occurrence(conn, clip_id, captured_at, app, title, device_name)
             conn.commit()
-            return {"id": int(last["id"]), "duplicate": True, "kind": kind}
-
-        cursor = conn.execute(
-            """
-            INSERT INTO clips (
-              captured_at, last_seen_at, kind, source_app, source_title, sha256,
-              char_len, preview, body, extra_json, device
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                captured_at,
-                captured_at,
-                kind,
-                app[:80],
-                title[:200],
-                digest,
-                char_len,
-                preview,
-                body,
-                json.dumps(extra, ensure_ascii=False) if extra else None,
-                device_name,
-            ),
-        )
+            return {"id": clip_id, "duplicate": True, "kind": kind}
+        cursor = conn.execute("""INSERT INTO clips(
+            captured_at,last_seen_at,kind,source_app,source_title,sha256,char_len,preview,body,
+            extra_json,device,uid,use_case) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (captured_at,captured_at,kind,app[:80],title,digest,len(body or ""),preview,body,
+             json.dumps(extra,ensure_ascii=False),device_name,uuid.uuid4().hex,annotation.get("use_case","")))
         clip_id = int(cursor.lastrowid)
-        conn.execute(
-            """
-            INSERT INTO clips_fts(rowid, preview, body, source_app, source_title, kind)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (clip_id, preview, body or "", app[:80], title[:200], kind),
-        )
-        sidecar = None
-        if body and kind == "prompt":
-            sidecar = write_sidecar(kind, clip_id, captured_at, app, title, body, labels)
-        elif body and kind == "code" and char_len >= 80:
-            sidecar = write_sidecar(kind, clip_id, captured_at, app, title, body, labels)
-        if sidecar:
-            conn.execute("UPDATE clips SET sidecar = ? WHERE id = ?", (sidecar, clip_id))
+        conn.execute("INSERT INTO clips_fts(rowid,preview,body,source_app,source_title,kind) VALUES(?,?,?,?,?,?)",
+                     (clip_id,preview,body or "",app[:80],title,kind))
+        clip_store.occurrence(conn, clip_id, captured_at, app, title, device_name)
         if png_bytes and kind != "secret":
-            image_dir = paths()["data"] / "images"
-            image_dir.mkdir(parents=True, exist_ok=True)
-            image_path = image_dir / f"{clip_id}.png"
-            image_path.write_bytes(png_bytes)
-            extra["image"] = str(image_path)
-            conn.execute(
-                "UPDATE clips SET extra_json = ? WHERE id = ?",
-                (json.dumps(extra, ensure_ascii=False), clip_id),
-            )
+            conn.execute("INSERT INTO clip_images VALUES(?,?)", (clip_id,png_bytes))
+        if (body and kind in {"prompt","code"}) or png_bytes:
+            conn.execute("INSERT INTO clip_jobs(clip_id) VALUES(?)", (clip_id,))
         conn.commit()
-        try:
-            if device_name == this_device() or device_name == "Phone":
-                export_device()
-        except Exception:
-            log("device export failed")
-        return {"id": clip_id, "duplicate": False, "kind": kind, "chars": char_len}
+        return {"id":clip_id,"duplicate":False,"kind":kind,"chars":len(body or "")}
     finally:
         conn.close()
 
 
 def prune(conn: sqlite3.Connection) -> int:
-    cutoff = datetime.now(timezone.utc).timestamp() - KEEP_DAYS * 86400
-    cutoff_iso = datetime.fromtimestamp(cutoff, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    doomed = [
-        int(row["id"])
-        for row in conn.execute(
-            "SELECT id FROM clips WHERE pinned = 0 AND captured_at < ?",
-            (cutoff_iso,),
-        )
-    ]
-    overflow = int(conn.execute("SELECT COUNT(*) AS n FROM clips WHERE pinned = 0").fetchone()["n"])
-    if overflow > MAX_ROWS:
-        doomed.extend(
-            int(row["id"])
-            for row in conn.execute(
-                "SELECT id FROM clips WHERE pinned = 0 ORDER BY id ASC LIMIT ?",
-                (overflow - MAX_ROWS,),
-            )
-        )
-    doomed = sorted(set(doomed))
-    if not doomed:
-        return 0
-    slots = ",".join("?" for _ in doomed)
-    sidecars = [
-        row["sidecar"]
-        for row in conn.execute(
-            f"SELECT sidecar FROM clips WHERE id IN ({slots}) AND sidecar IS NOT NULL",
-            doomed,
-        )
-    ]
-    conn.execute(f"DELETE FROM clips_fts WHERE rowid IN ({slots})", doomed)
-    conn.execute(f"DELETE FROM clips WHERE id IN ({slots})", doomed)
-    conn.commit()
-    for sidecar in sidecars:
-        if not sidecar:
-            continue
-        still = conn.execute("SELECT 1 FROM clips WHERE sidecar = ? LIMIT 1", (sidecar,)).fetchone()
-        if still:
-            continue
-        path = Path(sidecar)
-        if path.is_file():
-            path.unlink()
-    for clip_id in doomed:
-        image = paths()["data"] / "images" / f"{clip_id}.png"
-        if image.is_file():
-            image.unlink()
-    return len(doomed)
+    """History is retained. Archive affects visibility, never automatic deletion."""
+    return 0
+
+
+def process_pending(limit: int = 8) -> int:
+    conn = connect()
+    done = 0
+    try:
+        init_db(conn)
+        jobs = list(conn.execute("""SELECT c.* FROM clip_jobs j JOIN clips c ON c.id=j.clip_id
+            WHERE j.status='pending' AND j.next_attempt<=? ORDER BY c.id LIMIT ?""", (time.time(),limit)))
+        for row in jobs:
+            try:
+                sidecar = row["sidecar"]
+                if row["body"] and row["kind"] in {"prompt","code"}:
+                    sidecar = write_sidecar(row["kind"],row["id"],row["captured_at"],row["source_app"] or "",
+                                            row["source_title"] or "",row["body"],json.loads(row["extra_json"] or "{}").get("redactions",[]))
+                image = conn.execute("SELECT png FROM clip_images WHERE clip_id=?", (row["id"],)).fetchone()
+                if image:
+                    folder = paths()["data"] / "images"
+                    folder.mkdir(parents=True, exist_ok=True)
+                    target = folder / f"{row['id']}.png"
+                    temporary = target.with_suffix(".png.tmp")
+                    with temporary.open("wb") as handle:
+                        handle.write(image[0])
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    temporary.replace(target)
+                conn.execute("UPDATE clips SET sidecar=? WHERE id=?", (sidecar,row["id"]))
+                conn.execute("UPDATE clip_jobs SET status='done',error=NULL WHERE clip_id=?", (row["id"],))
+                conn.commit()
+                done += 1
+            except (OSError,ValueError,sqlite3.Error):
+                conn.rollback()
+                conn.execute("""UPDATE clip_jobs SET attempts=attempts+1,error='export-failed',
+                    next_attempt=? WHERE clip_id=?""", (time.time()+60,row["id"]))
+                conn.commit()
+    finally:
+        conn.close()
+    return done
+
+
+def set_state(clip_id: int, state: str) -> int:
+    if state not in clip_store.STATES:
+        raise ValueError("Unknown library state.")
+    conn = connect()
+    try:
+        init_db(conn)
+        found = conn.execute("UPDATE clips SET state=? WHERE id=?", (state,clip_id)).rowcount
+        conn.commit()
+        return 0 if found else 1
+    finally:
+        conn.close()
+
+
+def reindex_library() -> int:
+    conn = connect()
+    updated = 0
+    try:
+        init_db(conn)
+        for row in list(conn.execute("SELECT * FROM clips WHERE body IS NOT NULL AND kind!='secret'")):
+            body, labels = redact(row["body"])
+            extra = json.loads(row["extra_json"] or "{}")
+            encoded = extra.get("html_b64")
+            if encoded:
+                try:
+                    html_text = __import__("base64").b64decode(encoded, validate=True).decode("utf-8",errors="replace")
+                    if labels or extra.get("redactions") or redact(html_text)[1]:
+                        extra.pop("html_b64",None)
+                except (ValueError,TypeError):
+                    extra.pop("html_b64",None)
+            annotation = clip_store.annotation(body,row["source_title"] or "")
+            extra.update(annotation)
+            kind = classify_text(body)
+            if kind == "text" and annotation.get("use_case"):
+                kind = "prompt"
+            conn.execute("UPDATE clips SET body=?,preview=?,kind=?,use_case=?,extra_json=? WHERE id=?",
+                         (body,preview_of(body),kind,annotation.get("use_case",""),json.dumps(extra),row["id"]))
+            conn.execute("UPDATE clips_fts SET body=?,preview=?,kind=? WHERE rowid=?", (body,preview_of(body),kind,row["id"]))
+            if kind in {"prompt","code"}:
+                conn.execute("""INSERT INTO clip_jobs(clip_id) VALUES(?)
+                    ON CONFLICT(clip_id) DO UPDATE SET status='pending',next_attempt=0""", (row["id"],))
+            updated += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return updated
 
 
 def window_source(hwnd: int) -> tuple[str, str]:
@@ -1130,6 +1093,18 @@ def png_to_dib(png: bytes) -> bytes | None:
 
 def saved_image(clip_id: int) -> Path | None:
     path = paths()["data"] / "images" / f"{clip_id}.png"
+    if not path.is_file() and paths()["db"].exists():
+        conn = connect()
+        try:
+            init_db(conn)
+            image = conn.execute("SELECT png FROM clip_images WHERE clip_id=?", (clip_id,)).fetchone()
+            if image:
+                path.parent.mkdir(parents=True,exist_ok=True)
+                temporary = path.with_suffix(".png.tmp")
+                temporary.write_bytes(image[0])
+                temporary.replace(path)
+        finally:
+            conn.close()
     try:
         if not path.is_file() or path.stat().st_size < 32:
             return None
@@ -1143,22 +1118,15 @@ def saved_image(clip_id: int) -> Path | None:
 
 
 def own_paste_pending() -> bool:
-    path = paths()["suppress"]
     try:
-        if not path.is_file() or path.read_text(encoding="ascii").strip() != "own":
-            return False
-        if time.time() - path.stat().st_mtime < 1.2:
-            return True
-        path.unlink(missing_ok=True)
+        expected = paths()["suppress"].read_text(encoding="ascii").strip()
+        return expected.isdigit() and int(expected) == user32.GetClipboardSequenceNumber()
     except OSError:
         return False
-    return False
 
 
 def mark_own_paste() -> None:
-    path = paths()["suppress"]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("own\n", encoding="ascii")
+    clip_store.atomic_text(paths()["suppress"],str(user32.GetClipboardSequenceNumber())+"\n")
 
 
 def history_panel_open() -> bool:
@@ -1174,11 +1142,15 @@ def history_panel_open() -> bool:
 
 
 def read_global_text(handle: int) -> str | None:
+    size = int(kernel32.GlobalSize(handle))
+    if size < 2:
+        return None
     pointer = kernel32.GlobalLock(handle)
     if not pointer:
         return None
     try:
-        return ctypes.wstring_at(pointer)
+        raw = ctypes.string_at(pointer,min(size,(MAX_READ+1)*4))
+        return raw.decode("utf-16-le",errors="replace").split("\x00",1)[0]
     finally:
         kernel32.GlobalUnlock(handle)
 
@@ -1189,7 +1161,7 @@ def read_global_bytes(handle: int) -> bytes | None:
         return None
     try:
         size = kernel32.GlobalSize(handle)
-        if not size:
+        if not size or size > 32_000_000:
             return None
         return ctypes.string_at(pointer, size)
     finally:
@@ -1210,6 +1182,19 @@ def read_clipboard() -> dict | None:
     if not user32.OpenClipboard(None):
         return None
     try:
+        owner = int(user32.GetClipboardOwner() or 0)
+        owner_app, owner_title = window_source(owner)
+        if sensitive_source(owner_app,owner_title):
+            return {"excluded": "protected-source"}
+        for name in ("ExcludeClipboardContentFromMonitorProcessing","CanIncludeInClipboardHistory"):
+            format_id = user32.RegisterClipboardFormatW(name)
+            if format_id and user32.IsClipboardFormatAvailable(format_id):
+                if name.startswith("Exclude"):
+                    return {"excluded": "protected-format"}
+                handle = user32.GetClipboardData(format_id)
+                marker = read_global_bytes(handle) if handle else None
+                if marker and len(marker)>=4 and struct.unpack("<I",marker[:4])[0] == 0:
+                    return {"excluded": "protected-format"}
         text = None
         if user32.IsClipboardFormatAvailable(CF_UNICODETEXT):
             handle = user32.GetClipboardData(CF_UNICODETEXT)
@@ -1265,6 +1250,7 @@ def read_clipboard() -> dict | None:
         owner = user32.GetClipboardOwner()
         app, title = window_source(int(owner) if owner else 0)
         return {
+            "sequence": user32.GetClipboardSequenceNumber(),
             "text": text,
             "files": files,
             "has_image": has_image or bool(png_bytes) or bool(dib),
@@ -1278,7 +1264,7 @@ def read_clipboard() -> dict | None:
         user32.CloseClipboard()
 
 
-def set_clipboard_text(text: str, html_bytes: bytes | None = None) -> None:
+def set_clipboard_text(text: str, html_bytes: bytes | None = None, expected_sequence: int | None = None) -> bool:
     encoded = (text + "\0").encode("utf-16-le")
     handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(encoded))
     if not handle:
@@ -1299,6 +1285,8 @@ def set_clipboard_text(text: str, html_bytes: bytes | None = None) -> None:
         kernel32.GlobalFree(handle)
         raise OSError("clipboard open failed")
     try:
+        if expected_sequence is not None and user32.GetClipboardSequenceNumber() != expected_sequence:
+            return False
         if not user32.EmptyClipboard():
             raise OSError("clipboard empty failed")
         if not user32.SetClipboardData(CF_UNICODETEXT, handle):
@@ -1322,6 +1310,7 @@ def set_clipboard_text(text: str, html_bytes: bytes | None = None) -> None:
         user32.CloseClipboard()
         if handle:
             kernel32.GlobalFree(handle)
+    return True
 
 
 def set_clipboard_image(png: bytes) -> None:
@@ -1375,38 +1364,33 @@ def set_clipboard_image(png: bytes) -> None:
 def capture_once(fallback_app: str = "", fallback_title: str = "") -> dict | None:
     if own_paste_pending():
         return {"skipped": True}
+    if sensitive_source(fallback_app,fallback_title):
+        return {"skipped": True,"excluded":"protected-source"}
     snapshot = read_clipboard()
     if snapshot is None:
-        log("capture skipped: clipboard busy")
         return None
-    app, title = choose_app(snapshot["app"], snapshot["title"], fallback_app, fallback_title)
-    text = snapshot["text"]
-    html_bytes = snapshot.get("html")
-    if text and not snapshot["files"] and not snapshot.get("png") and not snapshot.get("dib"):
-        if terminal_host(app) or terminal_host(snapshot.get("app") or ""):
-            fixed = unwrap_terminal_wrap(text)
-            if fixed != text:
-                text = fixed
-                html_bytes = None
-                try:
-                    set_clipboard_text(fixed.replace("\n", "\r\n"))
-                    log("rejoined terminal wrap")
-                except OSError:
-                    log("terminal unwrap could not update clipboard")
+    if snapshot.get("excluded"):
+        return {"skipped":True,"excluded":snapshot["excluded"]}
+    app,title = choose_app(snapshot["app"],snapshot["title"],fallback_app,fallback_title)
+    original = snapshot["text"]
     png_bytes = trim_png(snapshot.get("png"))
     if png_bytes is None and snapshot.get("dib"):
         png_bytes = dib_to_png(snapshot["dib"])
-    result = ingest(
-        text,
-        app=app,
-        title=title,
-        files=snapshot["files"],
-        has_image=snapshot["has_image"] or bool(png_bytes),
-        html_bytes=html_bytes,
-        png_bytes=png_bytes,
-    )
-    if result and not result.get("duplicate"):
-        log(f"recorded id={result['id']} kind={result['kind']} chars={result.get('chars', 0)} app={app}")
+    # Store the eligible original before applying the accepted terminal-wrap repair.
+    result = ingest(original,app=app,title=title,files=snapshot["files"],
+                    has_image=snapshot["has_image"] or bool(png_bytes),
+                    html_bytes=snapshot.get("html"),png_bytes=png_bytes)
+    if result and original and terminal_host(app) and not snapshot["files"] and not png_bytes:
+        fixed = unwrap_terminal_wrap(original)
+        if fixed != original:
+            try:
+                if set_clipboard_text(fixed.replace("\n","\r\n"),expected_sequence=snapshot.get("sequence")):
+                    mark_own_paste()
+            except OSError:
+                log("terminal repair deferred")
+    if result and not result.get("duplicate") and "id" in result:
+        PANEL["last_capture_at"] = clip_store.now()
+        PANEL["last_error"] = None
     return result
 
 
@@ -1431,105 +1415,103 @@ def acquire_mutex() -> bool:
     return True
 
 
+def health_snapshot() -> dict:
+    location = paths()
+    info = {"version":clip_store.VERSION,"collector_running":watcher_running(),"retention":"keep",
+            "cloud_processing":False,"last_error":PANEL.get("last_error"),"database":str(location["db"])}
+    if location["db"].exists():
+        conn = sqlite3.connect(location["db"].as_uri()+"?mode=ro",uri=True)
+        try:
+            info["records"],info["last_capture_at"] = conn.execute("SELECT count(*),max(last_seen_at) FROM clips").fetchone()
+            if conn.execute("PRAGMA user_version").fetchone()[0]>=2:
+                info["pending_exports"] = conn.execute("SELECT count(*) FROM clip_jobs WHERE status='pending'").fetchone()[0]
+                info["occurrences"] = conn.execute("SELECT count(*) FROM clip_occurrences").fetchone()[0]
+        finally:
+            conn.close()
+    info["last_backup"] = None
+    backup_note = location["data"] / "last-backup.json"
+    if backup_note.is_file():
+        try:
+            info["last_backup"] = json.loads(backup_note.read_text(encoding="utf-8"))
+        except (OSError,ValueError):
+            pass
+    info["known_capture_gaps"] = PANEL.get("capture_gaps",0)
+    return info
+
+
 def watch() -> int:
     if not acquire_mutex():
-        if sys.stdout is not None:
-            emit("Clipboard collector is already running.")
+        emit("Clipboard collector is already running.")
         return 0
-    stop = paths()["stop"]
-    stop.unlink(missing_ok=True)
+    paths()["stop"].unlink(missing_ok=True)
+    log(f"started version={clip_store.VERSION} pid={os.getpid()}")
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except Exception:
         pass
-    log(f"started pid={os.getpid()}")
+    conn = connect()
     try:
-        export_device()
-    except Exception:
-        log("device export failed")
-    try:
-        capture_once()
-    except Exception:
-        log("initial capture failed")
-    sequence = user32.GetClipboardSequenceNumber()
-    last_prune = time.monotonic()
-    last_peers = 0.0
-    last_clip = time.monotonic()
+        init_db(conn)
+    finally:
+        conn.close()
+    PANEL["last_error"] = None
+    PANEL["capture_gaps"] = 0
     hot_hwnd = install_hotkey()
     start_panel_server()
-    while True:
-        pump_hotkey(hot_hwnd)
-        pending = PANEL.get("pending_clip")
-        if pending and time.monotonic() >= pending["due"]:
-            if history_panel_open() and pending["tries"] < 40:
-                pending["due"] = time.monotonic() + 0.3
-            else:
-                try:
-                    result = capture_once(pending["app"], pending["title"])
-                except Exception:
-                    log("capture failed")
-                    result = {"skipped": True}
-                if result is None and pending["tries"] < 8:
-                    pending["tries"] += 1
-                    pending["due"] = time.monotonic() + 0.4
-                else:
+    last_housekeeping = 0.0
+    last_export = 0.0
+    last_event = time.monotonic()
+    last_sequence = user32.GetClipboardSequenceNumber()
+    try:
+        capture_once()
+        while not paths()["stop"].exists():
+            pump_hotkey(hot_hwnd)
+            pending = PANEL.get("pending_clip")
+            if pending and time.monotonic() >= pending["due"]:
+                if user32.GetClipboardSequenceNumber() != pending["sequence"]:
+                    PANEL["capture_gaps"] += 1
+                    PANEL["last_error"] = "clipboard-changed-before-retry"
                     PANEL["pending_clip"] = None
-        if stop.exists():
-            stop.unlink(missing_ok=True)
-            log("stopped")
-            return 0
-        if PANEL.get("listen"):
-            time.sleep(0.02)
-            if time.monotonic() - last_peers > 20:
-                try:
-                    import_peers()
-                except Exception:
-                    log("peer import failed")
-                last_peers = time.monotonic()
-            if time.monotonic() - last_prune > 3600:
-                try:
-                    conn = connect()
+                else:
                     try:
-                        init_db(conn)
-                        removed = prune(conn)
-                        if removed:
-                            log(f"pruned {removed}")
-                    finally:
-                        conn.close()
-                except Exception:
-                    log("prune failed")
-                last_prune = time.monotonic()
-            continue
-        if time.monotonic() - last_clip < POLL_SECONDS:
-            time.sleep(0.02)
-            continue
-        last_clip = time.monotonic()
-        current = user32.GetClipboardSequenceNumber()
-        if current != sequence:
-            sequence = current
-            try:
-                capture_once()
-            except Exception:
-                log("capture failed")
-        if time.monotonic() - last_peers > 20:
-            try:
-                import_peers()
-            except Exception:
-                log("peer import failed")
-            last_peers = time.monotonic()
-        if time.monotonic() - last_prune > 3600:
-            try:
-                conn = connect()
-                try:
-                    init_db(conn)
-                    removed = prune(conn)
-                    if removed:
-                        log(f"pruned {removed}")
-                finally:
-                    conn.close()
-            except Exception:
-                log("prune failed")
-            last_prune = time.monotonic()
+                        result = capture_once(pending["app"],pending["title"])
+                    except (OSError,sqlite3.Error,ValueError):
+                        result = None
+                    if result is None and pending["tries"] < 8:
+                        pending["tries"] += 1
+                        pending["due"] = time.monotonic()+0.05
+                    else:
+                        PANEL["pending_clip"] = None
+                        if result is None:
+                            PANEL["last_error"] = "clipboard-unreadable"
+                            PANEL["capture_gaps"] += 1
+            # Fallback if Windows refused listener registration; do not leave capture disabled.
+            if not PANEL.get("listen"):
+                sequence = user32.GetClipboardSequenceNumber()
+                if sequence != last_sequence:
+                    last_sequence = sequence
+                    capture_once()
+            if PANEL.get("last_event"):
+                last_event = PANEL["last_event"]
+            if time.monotonic()-last_event > 0.25 and time.monotonic()-last_export > 1:
+                process_pending(limit=8)
+                last_export = time.monotonic()
+            if time.monotonic()-last_housekeeping > 10:
+                clip_store.atomic_text(paths()["data"]/"heartbeat.json",
+                    json.dumps({"pid":os.getpid(),"observed_at":clip_store.now(),**health_snapshot()}))
+                last_housekeeping = time.monotonic()
+            time.sleep(0.01 if PANEL.get("listen") else 0.05)
+    except Exception:
+        PANEL["last_error"] = "collector-stopped-unexpectedly"
+        log("collector stopped unexpectedly")
+        raise
+    finally:
+        paths()["stop"].unlink(missing_ok=True)
+        if PANEL.get("server"):
+            PANEL["server"].shutdown()
+            PANEL["server"].server_close()
+        log("stopped")
+    return 0
 
 
 def fetch(conn: sqlite3.Connection, clip_id: int) -> sqlite3.Row | None:
@@ -1537,45 +1519,7 @@ def fetch(conn: sqlite3.Connection, clip_id: int) -> sqlite3.Row | None:
 
 
 def search_rows(conn: sqlite3.Connection, query: str, kind: str | None, limit: int) -> list[sqlite3.Row]:
-    tokens = re.findall(r"[^\W_]{2,}", query, flags=re.UNICODE)[:12]
-    kind_sql = " AND c.kind = ?" if kind else ""
-    if tokens:
-        match = " AND ".join(f'"{token}"*' for token in tokens)
-        args: list = [match]
-        if kind:
-            args.append(kind)
-        args.append(limit)
-        try:
-            return list(
-                conn.execute(
-                    f"""
-                    SELECT c.* FROM clips_fts
-                    JOIN clips c ON c.id = clips_fts.rowid
-                    WHERE clips_fts MATCH ?{kind_sql}
-                    ORDER BY c.id DESC
-                    LIMIT ?
-                    """,
-                    args,
-                )
-            )
-        except sqlite3.OperationalError:
-            pass
-    like = f"%{query.strip()}%"
-    args = [like]
-    if kind:
-        args.append(kind)
-    args.append(limit)
-    return list(
-        conn.execute(
-            f"""
-            SELECT * FROM clips c
-            WHERE c.preview LIKE ?{kind_sql}
-            ORDER BY c.id DESC
-            LIMIT ?
-            """,
-            args,
-        )
-    )
+    return clip_store.query_rows(conn, query, kind, limit)
 
 
 def format_row(row: sqlite3.Row) -> str:
@@ -1679,7 +1623,6 @@ def copy_back(clip_id: int) -> int:
     if picture is None and not row["body"]:
         emit("That copy has nothing stored to paste.")
         return 1
-    mark_own_paste()
     try:
         if picture is not None and not row["body"]:
             set_clipboard_image(picture.read_bytes())
@@ -1697,6 +1640,7 @@ def copy_back(clip_id: int) -> int:
         paths()["suppress"].unlink(missing_ok=True)
         emit("Clipboard is busy.")
         return 1
+    mark_own_paste()
     emit(f"Copied #{clip_id} back to the clipboard.")
     return 0
 
@@ -1781,12 +1725,29 @@ def entry_title(body: str) -> str:
 
 
 def find_fabric_entry(clip_id: int) -> Path | None:
+    conn = connect()
+    try:
+        init_db(conn)
+        row = fetch(conn,clip_id)
+        if row is None:
+            return None
+        recorded = conn.execute("SELECT path FROM clip_promotions WHERE clip_uid=? LIMIT 1",(row["uid"],)).fetchone()
+        if recorded and Path(recorded[0]).is_file():
+            return Path(recorded[0])
+    finally:
+        conn.close()
     books = fabric_root() / "books"
     if not books.exists():
         return None
-    needle = f"clip_id: {clip_id}\n"
+    uid_needle = f"clip_uid: {quote_yaml(row['uid'])}\n"
+    legacy_id = f"clip_id: {clip_id}\n"
+    date_needle = f"captured_at: {quote_yaml(row['captured_at'])}\n"
     for path in books.glob("*/entries/*.md"):
-        if needle in path.read_text(encoding="utf-8"):
+        if path.is_symlink():
+            continue
+        with path.open(encoding="utf-8") as handle:
+            head = handle.read(2000)
+        if uid_needle in head or ("clip_uid:" not in head and legacy_id in head and date_needle in head):
             return path
     return None
 
@@ -1810,6 +1771,7 @@ def promote(clip_id: int, scope: str) -> int:
         return 1
     existing = find_fabric_entry(clip_id)
     if existing:
+        record_promotion(row, scope, existing)
         emit(str(existing))
         return 0
     root = fabric_root()
@@ -1822,12 +1784,14 @@ def promote(clip_id: int, scope: str) -> int:
     fence = "````" if "```" in body else "```"
     captured = row["captured_at"]
     day = fmt_time(captured)[:10]
-    entry = entries / f"{number:04d}-clip-{clip_id}.md"
+    entry = entries / f"{number:04d}-clip-{row['uid'][:12]}.md"
     text = "\n".join(
         [
             "---",
             f"entry: {number:04d}",
             f"clip_id: {clip_id}",
+            f"clip_uid: {quote_yaml(row['uid'])}",
+            f"use_case: {quote_yaml(row['use_case'])}",
             f"scope: {scope}",
             f"book: {book}",
             "status: captured",
@@ -1940,14 +1904,27 @@ def promote(clip_id: int, scope: str) -> int:
     else:
         with index.open("a", encoding="utf-8") as handle:
             handle.write(line + "\n")
+    record_promotion(row, scope, entry)
     emit(str(entry))
     return 0
+
+
+def record_promotion(row, scope: str, entry: Path) -> None:
+    conn = connect()
+    try:
+        init_db(conn)
+        conn.execute("UPDATE clips SET state='saved',pinned=1 WHERE id=?", (row["id"],))
+        conn.execute("INSERT OR REPLACE INTO clip_promotions VALUES(?,?,?,?)",
+                     (row["uid"],scope,str(entry),clip_store.now()))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def vault_atoms() -> Path:
     override = os.environ.get("STARLIGHT_VAULT")
     if override:
-        return Path(override) / "atoms"
+        return clip_store.safe_vault(Path(override)) / "atoms"
     candidate = Path(r"C:\Users\frank\starlight\repos\starlight-memory-vault")
     if candidate.is_dir():
         return candidate / "atoms"
@@ -1969,7 +1946,7 @@ def remember_one(clip_id: int) -> int:
         return 1
     atoms = vault_atoms()
     atoms.mkdir(parents=True, exist_ok=True)
-    needle = f"clipboard_clip: {clip_id}\n"
+    needle = f"clipboard_uid: {quote_yaml(row['uid'])}\n"
     for path in atoms.glob("clipboard-*.md"):
         try:
             head = path.read_text(encoding="utf-8")[:1200]
@@ -1984,7 +1961,7 @@ def remember_one(clip_id: int) -> int:
     title = entry_title(body)
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:48] or "copy"
     digest = hashlib.sha256(body.encode("utf-8")).hexdigest()[:6]
-    memory_id = f"clipboard-{clip_id}-{slug}-{digest}"
+    memory_id = f"clipboard-{row['uid'][:12]}-{slug}-{digest}"
     reason = ""
     try:
         extra = json.loads(row["extra_json"] or "{}")
@@ -2008,6 +1985,8 @@ def remember_one(clip_id: int) -> int:
         "tenant_id: frank",
         f"observed_at: {quote_yaml(row['captured_at'] or utc_now())}",
         f"clipboard_clip: {clip_id}",
+        f"clipboard_uid: {quote_yaml(row['uid'])}",
+        "index_state: pending",
         "---",
         "",
         title,
@@ -2122,6 +2101,7 @@ def self_test() -> int:
             check("secret-recorded", bool(secret) and secret["kind"] == "secret")
             saved = ingest(prompt, app="Cursor.exe", title="prompt.md")
             check("prompt-kind", bool(saved) and saved["kind"] == "prompt")
+            process_pending()
             conn = connect()
             try:
                 init_db(conn)
@@ -2204,11 +2184,7 @@ def load_board_rows(query: str) -> list[sqlite3.Row]:
     conn = connect()
     try:
         init_db(conn)
-        if query.strip():
-            return search_rows(conn, query, None, 80)
-        return list(
-            conn.execute("SELECT * FROM clips ORDER BY pinned DESC, id DESC LIMIT 80")
-        )
+        return search_rows(conn,query,None,100)
     finally:
         conn.close()
 
@@ -2276,7 +2252,6 @@ def edge_path() -> Path | None:
 
 
 def board_items(query: str) -> dict:
-    import_peers()
     rows = load_board_rows(query)
     devices = []
     items = []
@@ -2293,14 +2268,17 @@ def board_items(query: str) -> dict:
                 "id": int(row["id"]),
                 "kind": row["kind"],
                 "preview": preview,
-                "body": body[:8000],
-                "more": len(body) > 8000,
+                "body": body[:400],
+                "more": len(body) > 400,
+                "state": row["state"],
+                "use_case": row["use_case"],
+                "copies": int(row["hit_count"]),
                 "captured_at": row["captured_at"],
                 "app": display_app(row["source_app"] or ""),
                 "title": clean_title(row["source_app"] or "", row["source_title"] or ""),
                 "device": device,
                 "pinned": int(row["pinned"] or 0),
-                "book": find_fabric_entry(int(row["id"])) is not None,
+                "book": row["state"] == "saved",
                 "stored": bool(body),
                 "reason": "",
                 "image": False,
@@ -2313,6 +2291,7 @@ def board_items(query: str) -> dict:
         try:
             extra = json.loads(row["extra_json"] or "{}")
             items[-1]["reason"] = str(extra.get("reason") or "")
+            items[-1]["incomplete"] = bool(extra.get("truncated"))
         except json.JSONDecodeError:
             pass
     return {"device": this_device(), "devices": devices, "items": items}
@@ -2435,6 +2414,15 @@ def start_panel_server() -> None:
 
         def _allowed(self) -> bool:
             sent = (parse_qs(urlparse(self.path).query).get("k") or [""])[0]
+            bearer = self.headers.get("Authorization","")
+            if bearer.startswith("Bearer "):
+                sent = bearer[7:]
+            origin = self.headers.get("Origin")
+            expected = f"http://127.0.0.1:{PANEL['port']}"
+            if origin and origin != expected:
+                return False
+            if self.headers.get("Host") != f"127.0.0.1:{PANEL['port']}":
+                return False
             return bool(PANEL["token"]) and secrets.compare_digest(sent, PANEL["token"])
 
         def _send(self, code: int, payload: bytes, content_type: str) -> None:
@@ -2442,6 +2430,9 @@ def start_panel_server() -> None:
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(payload)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy","no-referrer")
+            self.send_header("X-Content-Type-Options","nosniff")
+            self.send_header("Content-Security-Policy","default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'")
             self.end_headers()
             self.wfile.write(payload)
 
@@ -2450,9 +2441,12 @@ def start_panel_server() -> None:
 
         def _body(self) -> dict:
             length = int(self.headers.get("Content-Length") or 0)
-            if length <= 0:
-                return {}
-            return json.loads(self.rfile.read(length).decode("utf-8"))
+            if length <= 0 or length > 512_000:
+                raise ValueError("Request size is outside the allowed range.")
+            value = json.loads(self.rfile.read(length).decode("utf-8"))
+            if not isinstance(value,dict):
+                raise ValueError("Expected a JSON object.")
+            return value
 
         def do_GET(self) -> None:
             if not self._allowed():
@@ -2477,8 +2471,28 @@ def start_panel_server() -> None:
                 payload = image.read_bytes()
                 self._send(200, payload, "image/png")
                 return
+            if path == "/api/health":
+                self._json(200,health_snapshot())
+                return
+            if path == "/api/detail":
+                try:
+                    clip_id = int((query.get("id") or ["0"])[0])
+                    conn = connect()
+                    try:
+                        init_db(conn)
+                        row = fetch(conn,clip_id)
+                        detail = {"id":clip_id,"body":row["body"] or "","state":row["state"]} if row else None
+                    finally:
+                        conn.close()
+                    self._json(200 if detail else 404,detail or {"error":"Copy not found."})
+                except ValueError:
+                    self._json(400,{"error":"Invalid copy ID."})
+                return
             if path == "/api/items":
-                self._json(200, board_items((query.get("q") or [""])[0]))
+                try:
+                    self._json(200,board_items((query.get("q") or [""])[0]))
+                except ValueError as error:
+                    self._json(400,{"error":str(error)})
                 return
             if path == "/api/raise":
                 target = int((query.get("target") or ["0"])[0] or 0)
@@ -2498,9 +2512,32 @@ def start_panel_server() -> None:
             path = urlparse(self.path).path
             try:
                 payload = self._body()
+                if path == "/api/backup":
+                    folder = clip_store.backup(paths()["root"])
+                    self._json(200,{"ok":True,"snapshot":folder.name})
+                    return
+                if path == "/api/add":
+                    text = payload.get("text")
+                    if not isinstance(text,str) or not text.strip() or len(text)>100_000:
+                        raise ValueError("Write an idea of up to 100,000 characters.")
+                    result = ingest(text,app="starlight-clipboard",title="Saved idea")
+                    if result and result.get("kind") != "secret":
+                        set_state(result["id"],"saved")
+                    self._json(200,{"ok":bool(result),"id":result.get("id") if result else None})
+                    return
                 clip_id = int(payload.get("id"))
-            except (TypeError, ValueError, json.JSONDecodeError):
-                self._json(400, {"ok": False})
+            except (TypeError, ValueError, json.JSONDecodeError) as error:
+                self._json(400,{"ok":False,"error":str(error) or "Invalid request."})
+                return
+            except (OSError,sqlite3.Error):
+                self._json(503,{"ok":False,"error":"Local storage is unavailable. Retry after checking disk space."})
+                return
+            if path == "/api/state":
+                state = str(payload.get("state",""))
+                if state not in clip_store.STATES:
+                    self._json(400,{"ok":False,"error":"Unknown library state."})
+                else:
+                    self._json(200,{"ok":set_state(clip_id,state) == 0})
                 return
             if path == "/api/paste":
                 if copy_back(clip_id) != 0:
@@ -2533,7 +2570,7 @@ def start_panel_server() -> None:
                 self._json(200, {"ok": remember_one(clip_id) == 0})
                 return
             if path == "/api/delete":
-                self._json(200, {"ok": delete_clip(clip_id)})
+                self._json(200, {"ok": set_state(clip_id,"archived") == 0})
                 return
             self.send_error(404)
 
@@ -2554,15 +2591,20 @@ def launch_palette_window() -> int:
         return 0
     x, y, width, height = palette_bounds()
     url = f"http://127.0.0.1:{PANEL['port']}/?k={PANEL['token']}"
+    # This is the user's utility window, isolated from signed-in browser sessions.
+    profile = paths()["root"] / "ui-profile"
+    profile.mkdir(parents=True, exist_ok=True)
     subprocess.Popen(
         [
             str(browser),
+            f"--user-data-dir={profile}",
             f"--app={url}",
             f"--window-size={width},{height}",
             f"--window-position={x},{y}",
             "--new-window",
             "--no-first-run",
             "--disable-extensions",
+            "--disable-sync",
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -2618,7 +2660,6 @@ def install_hotkey() -> int:
         return 0
     if not user32.RegisterHotKey(hwnd, 1, 0x0001 | 0x0002 | 0x4000, 0x56):
         log(f"hotkey unavailable ({kernel32.GetLastError()})")
-        return int(hwnd)
     user32.AddClipboardFormatListener.argtypes = [wintypes.HWND]
     user32.AddClipboardFormatListener.restype = wintypes.BOOL
     PANEL["listen"] = bool(user32.AddClipboardFormatListener(hwnd))
@@ -2658,24 +2699,26 @@ def pump_hotkey(hwnd: int) -> None:
     message = Msg()
     while user32.PeekMessageW(ctypes.byref(message), None, 0, 0, 1):
         if message.message == 0x031D:
+            sequence = user32.GetClipboardSequenceNumber()
+            if sequence == PANEL.get("last_sequence"):
+                continue
+            PANEL["last_sequence"] = sequence
+            PANEL["last_event"] = time.monotonic()
             if own_paste_pending():
                 continue
             foreground = int(user32.GetForegroundWindow() or 0)
-            fallback_app, fallback_title = ("", "")
-            if foreground and foreground != int(PANEL.get("hwnd") or 0):
-                fallback_app, fallback_title = window_source(foreground)
-            if terminal_host(fallback_app):
-                try:
-                    if repair_terminal_clipboard(fallback_app):
-                        log("rejoined terminal wrap")
-                except Exception:
-                    log("terminal unwrap failed")
-            PANEL["pending_clip"] = {
-                "due": time.monotonic() + 0.45,
-                "app": fallback_app,
-                "title": fallback_title,
-                "tries": 0,
-            }
+            fallback_app,fallback_title = window_source(foreground) if foreground else ("","")
+            old = PANEL.get("pending_clip")
+            if old and old["sequence"] != sequence:
+                PANEL["capture_gaps"] = PANEL.get("capture_gaps",0)+1
+            try:
+                result = capture_once(fallback_app,fallback_title)
+            except (OSError,sqlite3.Error,ValueError):
+                result = None
+                PANEL["last_error"] = "capture-failed"
+            PANEL["pending_clip"] = None if result is not None else {
+                "due":time.monotonic()+0.03,"app":fallback_app,"title":fallback_title,
+                "tries":0,"sequence":sequence}
             continue
         if message.message == 0x0312:
             target = int(user32.GetForegroundWindow() or 0)
@@ -2707,7 +2750,7 @@ def board() -> int:
     if watcher_running():
         emit("Clipboard collector is running, but the palette did not open.")
         return 1
-    emit("Clipboard collector is stopped. It starts again at login.")
+    emit("Clipboard collector is stopped. Run clips watch or the installed start shortcut.")
     return 1
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2745,7 +2788,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("fabric", help="List curated prompt-fabric entries")
     sub.add_parser("board", help="Open the clipboard window")
-    sub.add_parser("status")
+    status_cmd = sub.add_parser("status")
+    status_cmd.add_argument("--json",action="store_true")
+    doctor = sub.add_parser("doctor",help="Read collector, database, export and backup health")
+    doctor.add_argument("--json",action="store_true")
+    backup_cmd = sub.add_parser("backup",help="Create a consistent private local snapshot")
+    backup_cmd.add_argument("--destination",type=Path)
+    restore_cmd = sub.add_parser("restore",help="Verify and restore a snapshot into a new directory")
+    restore_cmd.add_argument("snapshot",type=Path)
+    restore_cmd.add_argument("--target",type=Path,required=True)
+    export_cmd = sub.add_parser("export",help="Export a bounded query to a new private JSONL file")
+    export_cmd.add_argument("--query",default="state:any")
+    export_cmd.add_argument("--destination",type=Path,required=True)
+    for name in ("archive","unarchive","resolve"):
+        state_cmd = sub.add_parser(name)
+        state_cmd.add_argument("id",type=int)
+    add_cmd = sub.add_parser("add",help="Save an idea explicitly")
+    add_cmd.add_argument("text",nargs="+")
+    sub.add_parser("reindex",help="Refresh local prompt metadata and repair pending exports")
     sub.add_parser("watch", help="Run the collector in this window")
     sub.add_parser("stop")
     sub.add_parser("folder", help="Open the saved prompts folder")
@@ -2795,8 +2855,42 @@ def main(argv: list[str] | None = None) -> int:
         return show_fabric()
     if command == "board":
         return board()
-    if command == "status":
-        return status()
+    if command in {"status","doctor"}:
+        info = health_snapshot()
+        if args.json:
+            emit(json.dumps(info,ensure_ascii=False))
+        else:
+            for key,value in info.items():
+                emit(f"{key}: {value}")
+        return 0
+    if command == "backup":
+        emit(str(clip_store.backup(paths()["root"],args.destination)))
+        return 0
+    if command == "restore":
+        emit(str(clip_store.restore(args.snapshot,args.target)))
+        return 0
+    if command == "export":
+        conn = connect()
+        try:
+            init_db(conn)
+            count = clip_store.export_jsonl(conn,args.destination,args.query)
+        finally:
+            conn.close()
+        emit(f"Exported {count} private records.")
+        return 0
+    if command in {"archive","unarchive","resolve"}:
+        return set_state(args.id,{"archive":"archived","unarchive":"active","resolve":"resolved"}[command])
+    if command == "add":
+        result = ingest(" ".join(args.text),app="starlight-clipboard",title="Saved idea")
+        if result and result["kind"] != "secret":
+            set_state(result["id"],"saved")
+        emit(f"Saved #{result['id']}." if result else "Nothing to save.")
+        return 0 if result else 1
+    if command == "reindex":
+        emit(f"Reindexed {reindex_library()} records.")
+        while process_pending(100):
+            pass
+        return 0
     if command == "watch":
         return watch()
     if command == "stop":

@@ -1,440 +1,126 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Starlight Clipboard</title>
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Starlight Clipboard</title>
 <style>
-  :root {
-    color-scheme: dark;
-    --bg: #09090b;
-    --ink: #fafafa;
-    --muted: #a1a1aa;
-    --line: #27272a;
-    --select: #27272a;
-    --mark: #fafafa;
-    --code: #b7c7b0;
-    --link: #b7c3cc;
-    --secret: #c9a39a;
-  }
-  * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--ink); }
-  body {
-    font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif;
-    font-size: 14px;
-    line-height: 1.35;
-    overflow: hidden;
-  }
-  .shell { height: 100%; display: flex; flex-direction: column; }
-  .search {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    padding: 16px 18px 14px;
-    border-bottom: 1px solid var(--line);
-  }
-  .search input {
-    flex: 1;
-    border: 0;
-    outline: none;
-    background: transparent;
-    color: var(--ink);
-    font: inherit;
-    font-size: 16px;
-    letter-spacing: -0.015em;
-    caret-color: var(--mark);
-  }
-  .search input::placeholder { color: #71717a; }
-  .device { color: var(--muted); font-size: 12px; white-space: nowrap; }
-  .stage { flex: 1; min-height: 0; display: grid; grid-template-columns: 1.2fr 0.8fr; }
-  .list { overflow: auto; min-height: 0; }
-  .group {
-    padding: 12px 16px 4px;
-    color: #71717a;
-    font-size: 11px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-  .row {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 2px 12px;
-    margin: 1px 8px;
-    padding: 8px 10px;
-    border-radius: 8px;
-    cursor: default;
-  }
-  .row[aria-selected="true"] { background: #27272a; box-shadow: inset 2px 0 0 #fafafa; }
-  .line { display: flex; gap: 10px; min-width: 0; align-items: center; }
-  .thumb {
-    flex: none;
-    width: 44px;
-    height: 32px;
-    object-fit: cover;
-    border-radius: 4px;
-    background: #18181b;
-    border: 1px solid #3f3f46;
-  }
-  .kind { flex: none; width: 72px; font-size: 12px; color: var(--muted); }
-  .kind[data-kind="prompt"] { color: var(--mark); }
-  .kind[data-kind="code"] { color: var(--code); }
-  .kind[data-kind="url"] { color: var(--link); }
-  .kind[data-kind="secret"] { color: var(--secret); }
-  .text {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
-  .pin { color: var(--mark); }
-  .preview {
-    border-left: 1px solid var(--line);
-    background: #0c0c0e;
-    overflow: auto;
-    padding: 18px 20px 20px;
-    white-space: pre-wrap;
-    word-break: break-word;
-    font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif;
-  }
-  .preview[data-code="true"] {
-    font-family: "Cascadia Code", Consolas, monospace;
-    font-size: 12.5px;
-    line-height: 1.5;
-  }
-  .preview-kind { color: var(--muted); font-size: 12px; margin-bottom: 8px; font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif; }
-  .why { margin: 0 0 12px; color: #e4e4e7; }
-  .shot {
-    display: block;
-    max-width: 100%;
-    max-height: 340px;
-    object-fit: contain;
-    border-radius: 8px;
-    background: #18181b;
-    border: 1px solid #27272a;
-    margin-bottom: 12px;
-  }
-  .empty { color: var(--muted); padding: 22px 18px; }
-  .bar {
-    display: flex;
-    gap: 16px;
-    align-items: center;
-    padding: 10px 16px;
-    border-top: 1px solid var(--line);
-    color: var(--muted);
-    font-size: 12px;
-  }
-  kbd {
-    font-family: inherit;
-    font-size: 11px;
-    border: 1px solid #3f3f46;
-    border-bottom-width: 2px;
-    border-radius: 4px;
-    padding: 1px 5px;
-    color: #e4e4e7;
-  }
-  #status { margin-left: auto; color: #e4e4e7; }
-  .list::-webkit-scrollbar, .preview::-webkit-scrollbar { width: 10px; }
-  .list::-webkit-scrollbar-thumb, .preview::-webkit-scrollbar-thumb {
-    background: #3f3f46;
-    border-radius: 99px;
-    border: 2px solid var(--bg);
-  }
-  @media (prefers-reduced-motion: reduce) {
-    * { scroll-behavior: auto; }
-  }
-</style>
-</head>
-<body>
+:root{color-scheme:dark;--bg:#111113;--panel:#18181b;--line:#36363d;--text:#f4f4f5;--muted:#b4b4bf;--mark:#f0cc86}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 "Segoe UI Variable Text","Segoe UI",sans-serif}
+button,input,textarea{font:inherit}button{min-height:44px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text);padding:8px 12px;cursor:pointer}
+button:hover:not(:disabled){background:#29292f}button:active:not(:disabled){background:#35353d}button:disabled{opacity:.5;cursor:default}
+:focus-visible{outline:2px solid var(--mark);outline-offset:3px}::selection{background:#70592e;color:#fff}
+input,textarea{color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:6px;min-height:44px;padding:10px 12px;caret-color:var(--mark)}
+input::placeholder,textarea::placeholder{color:var(--muted)}.shell{height:100dvh;min-height:480px;display:flex;flex-direction:column}
+header{display:flex;gap:16px;align-items:center;padding:14px 20px 8px}h1{font-size:18px;font-weight:600;margin:0}.health{margin-left:auto;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+.search{display:flex;gap:10px;padding:8px 20px}#q{flex:1;min-width:0}nav{display:flex;gap:6px;padding:4px 20px 12px;overflow-x:auto}
+nav button{white-space:nowrap;border-color:transparent;background:transparent}nav button[aria-pressed=true]{background:#332b1d;border-color:#826a40;color:var(--mark)}
+.filters{display:flex;gap:12px;align-items:center;padding:0 20px 12px;color:var(--muted)}.filters label{display:flex;align-items:center;gap:8px;font-size:12px}.filters input{max-width:160px}.hint{margin-left:auto;font-size:12px}
+.stage{flex:1;min-height:0;display:grid;grid-template-columns:minmax(260px,1fr) minmax(300px,1fr);border-top:1px solid var(--line)}
+.list{overflow:auto;padding:8px}.row{display:block;width:100%;text-align:left;border-color:transparent;margin-bottom:4px;padding:12px;min-height:76px;background:transparent}
+.row[aria-selected=true]{background:#29251d;border-color:#826a40}.row .text{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.meta{display:block;font-size:12px;color:var(--muted);margin-top:5px;font-variant-numeric:tabular-nums}
+.preview{border-left:1px solid var(--line);background:#141416;overflow:auto;padding:20px}.preview h2{font-size:16px;margin:0 0 8px;font-weight:600}
+.why{font-size:12px;color:var(--mark);margin:12px 0}.body{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.65;max-width:75ch}
+.body[data-code=true]{font:12px/1.7 "Cascadia Code",Consolas,monospace}.shot{max-width:100%;max-height:320px;object-fit:contain;margin:16px 0}
+.empty{padding:20px;color:var(--muted);max-width:55ch}.actions{display:flex;gap:6px;flex-wrap:wrap;padding:10px 20px;border-top:1px solid var(--line)}.primary{border-color:#826a40;color:var(--mark)}
+footer{display:flex;gap:12px;align-items:center;padding:4px 20px 12px;color:var(--muted);font-size:12px;min-height:34px}#status{flex:1;overflow-wrap:anywhere}#status[data-error=true]{color:#ffb4ac}
+kbd{font:inherit;border:1px solid var(--line);border-radius:3px;padding:1px 4px}.idea{margin:0 20px 12px;padding:12px;border:1px solid var(--line);border-radius:6px}
+.idea label{display:block;margin-bottom:8px}.idea textarea{width:100%;min-height:120px;resize:vertical}.buttons{display:flex;gap:8px;margin-top:8px}[hidden]{display:none!important}
+@media(max-width:680px){header{padding:12px 12px 4px;gap:8px}.search{padding:8px 12px}nav{padding:0 12px 8px}.filters{padding:0 12px 10px;flex-wrap:wrap;gap:8px}.hint{display:none}.health{font-size:11px;max-width:45%;text-align:right}.stage{grid-template-columns:1fr;grid-template-rows:minmax(150px,36vh) minmax(120px,1fr)}.preview{border-left:0;border-top:1px solid var(--line);padding:14px}.row{min-height:64px}.actions{padding:8px 12px}.actions button{flex:1;white-space:nowrap}footer{padding:4px 12px 10px}.idea{margin:0 12px 10px}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+</style></head><body>
 <div class="shell">
-  <div class="search">
-    <input id="q" type="text" placeholder="Search copies, or type > for commands" autocomplete="off" spellcheck="false" aria-label="Search copies">
-    <div class="device" id="device"></div>
-  </div>
-  <div class="stage">
-    <div class="list" id="list" role="listbox" aria-label="Clipboard"></div>
-    <div class="preview" id="preview"></div>
-  </div>
-  <div class="bar" id="bar">
-    <span><kbd>Enter</kbd> Paste</span>
-    <span><kbd>Ctrl</kbd> <kbd>P</kbd> Pin</span>
-    <span><kbd>Ctrl</kbd> <kbd>Enter</kbd> Save to book</span>
-    <span><kbd>Esc</kbd> Hide</span>
-    <span><kbd>1</kbd>–<kbd>9</kbd> Paste</span>
-    <span>Win+V is Windows history</span>
-    <span id="status"></span>
-  </div>
+<header><h1>Starlight Clipboard</h1><div class="health" id="health">Checking capture…</div></header>
+<div class="search"><input id="q" type="search" placeholder="Search words, app:chrome, use:suno…" aria-label="Search clipboard history" role="combobox" aria-expanded="true" aria-controls="list" aria-autocomplete="list" autocomplete="off" spellcheck="false"><button id="new-idea" aria-expanded="false" aria-controls="idea">Save idea</button></div>
+<form id="idea" class="idea" hidden><label for="idea-text">An idea to keep</label><textarea id="idea-text" maxlength="100000" placeholder="Write it here. The original stays on this PC."></textarea><div class="buttons"><button class="primary" type="submit">Save locally</button><button id="cancel-idea" type="button">Close</button></div></form>
+<nav aria-label="Library views"><button data-view="all" aria-pressed="true">Recent</button><button data-view="prompts" aria-pressed="false">Prompts</button><button data-view="suno" aria-pressed="false">Suno candidates</button><button data-view="saved" aria-pressed="false">Saved</button><button data-view="archive" aria-pressed="false">Archive</button><button data-view="history" aria-pressed="false">All history</button></nav>
+<div class="filters"><label>On date <input id="date" type="date" aria-label="Filter by local capture date"></label><button id="clear" type="button">Clear filters</button><span class="hint">Local archive · Windows <kbd>Win</kbd> + <kbd>V</kbd> stays available</span></div>
+<main class="stage"><div class="list" id="list" role="listbox" aria-label="Captured items" aria-busy="false"></div><section class="preview" id="preview" aria-label="Selected item"></section></main>
+<div class="actions" aria-label="Selected item actions"><button id="paste" class="primary" disabled>Paste</button><button id="copy" disabled>Copy</button><button id="pin" disabled>Pin</button><button id="book" disabled>Save to prompt book</button><button id="brain" disabled>File one note</button><button id="archive" disabled>Archive</button><button id="backup">Back up</button></div>
+<footer><span id="status" role="status" aria-live="polite">Your captures stay local.</span><button id="retry" hidden>Retry</button><span><kbd>Esc</kbd> Hide</span></footer>
 </div>
 <script>
-const token = "__TOKEN__";
-const input = document.getElementById("q");
-const list = document.getElementById("list");
-const preview = document.getElementById("preview");
-const deviceEl = document.getElementById("device");
-const labels = { prompt: "Prompt", code: "Code", url: "Link", path: "Path", command: "Command", files: "Files", image: "Image", secret: "Secret", text: "Text" };
-const commands = [
-  { id: "cmd-prompts", kind: "command", preview: "Show saved prompts", detail: "A prompt is text that tells an agent what to do. These are the copies already marked that way.", command: "prompts" },
-  { id: "cmd-pinned", kind: "command", preview: "Show pinned copies", detail: "Pinned copies stay when old history is pruned.", command: "pinned" },
-  { id: "cmd-book", kind: "command", preview: "Save the selected copy to the Starlight prompt book", detail: "Writes a private entry under the Starlight prompt fabric. It does not push to GitHub and it does not become Arcanea canon.", command: "book" },
-  { id: "cmd-brain", kind: "command", preview: "File this copy in the second brain", detail: "Writes one private note for this copy. It does not import the rest of the clipboard, and it does not publish it.", command: "brain" },
-];
-let items = [];
-let copies = [];
-let selected = 0;
-let timer = 0;
-let view = "all";
-
-function ago(iso) {
-  const then = Date.parse(iso);
-  if (!then) return "";
-  const minutes = Math.round((Date.now() - then) / 60000);
-  if (minutes < 1) return "now";
-  if (minutes < 60) return minutes + "m";
-  const hours = Math.round(minutes / 60);
-  if (hours < 36) return hours + "h";
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(then);
+"use strict";
+const token="__TOKEN__";
+const $=id=>document.getElementById(id);
+const input=$("q"),list=$("list"),preview=$("preview");
+const labels={prompt:"Prompt",code:"Code",url:"Link",path:"Path",command:"Command",files:"File paths",image:"Picture",secret:"Excluded",text:"Text"};
+const prefixes={all:"",prompts:"type:prompt",suno:"use:suno",saved:"state:saved",archive:"state:archived",history:"state:any"};
+let items=[],selected=-1,view="all",loadVersion=0,detailVersion=0,timer,loadingController,detailController;
+function current(){return items[selected]||null}
+function message(text,error=false){$("status").textContent=text;$("status").dataset.error=String(error)}
+async function request(path,options={}){
+ const response=await fetch(path+(path.includes("?")?"&":"?")+"k="+encodeURIComponent(token),{cache:"no-store",...options});
+ const data=await response.json();if(!response.ok||data.ok===false)throw new Error(data.error||"The action could not be completed. Retry.");return data;
 }
-
-function current() {
-  return items[selected] || null;
+function query(){
+ const manual=input.value,parts=[manual.trim()];
+ parts.unshift(prefixes[view].split(" ").filter(Boolean).filter(x=>!new RegExp("(^|\\s)"+x.split(":")[0]+":").test(manual)).join(" "));
+ if($("date").value&&!/(^|\s)(on|after|before):/.test(manual))parts.push("on:"+$("date").value);
+ return parts.filter(Boolean).join(" ");
 }
-
-function renderPreview() {
-  const item = current();
-  preview.dataset.code = item && (item.kind === "code" || item.kind === "command") ? "true" : "false";
-  if (!item) {
-    preview.innerHTML = '<div class="empty">Type &gt; for commands. Prompts you keep stay in the Starlight prompt book on this PC. A second machine gets the tool from GitHub and keeps its own copies.</div>';
-    return;
-  }
-  if (item.command) {
-    preview.dataset.code = "false";
-    preview.textContent = item.detail;
-    return;
-  }
-  const kind = document.createElement("div");
-  kind.className = "preview-kind";
-  const bits = [labels[item.kind] || "Text", item.app, item.title, item.device].filter(Boolean);
-  if (item.book) bits.push("In the Starlight book");
-  if (item.pinned) bits.push("Pinned");
-  kind.textContent = bits.join("  ·  ");
-  const parts = [kind];
-  const why = item.reason || (item.kind === "prompt" ? "Instructions for an agent" : "");
-  if (why) {
-    const line = document.createElement("div");
-    line.className = "why";
-    line.textContent = why;
-    parts.push(line);
-  }
-  if (item.image) {
-    const img = document.createElement("img");
-    img.className = "shot";
-    img.alt = "";
-    img.src = "/api/image?id=" + item.id + "&k=" + encodeURIComponent(token);
-    parts.push(img);
-  }
-  const body = document.createElement("div");
-  if (item.kind === "image" && !item.image) body.textContent = "The picture was not kept. Copy it again.";
-  else if (item.body) body.textContent = item.body;
-  else if (!item.image) body.textContent = "The value was not stored.";
-  if (body.textContent) parts.push(body);
-  preview.replaceChildren(...parts);
+function stamp(value){const date=new Date(value);return Number.isNaN(date.getTime())?"Unknown date":new Intl.DateTimeFormat(undefined,{dateStyle:"medium",timeStyle:"short"}).format(date)}
+function element(tag,text,className){const node=document.createElement(tag);if(text!==undefined)node.textContent=text;if(className)node.className=className;return node}
+function syncActions(){
+ const item=current(),text=!!(item&&item.stored&&item.kind!=="image"&&item.kind!=="secret");
+ for(const id of ["paste","copy","pin","book","brain","archive"])$(id).disabled=!item;
+ $("paste").disabled=$("copy").disabled=!(item&&item.stored);$("book").disabled=$("brain").disabled=!text;
+ $("pin").textContent=item&&item.pinned?"Unpin":"Pin";$("archive").textContent=item&&item.state==="archived"?"Restore":"Archive";
 }
-
-function render() {
-  list.replaceChildren();
-  if (!items.length) {
-    const empty = document.createElement("div");
-    empty.className = "empty";
-    empty.textContent = input.value.trim() ? "No copies matched." : "Nothing copied yet.";
-    list.append(empty);
-    renderPreview();
-    return;
-  }
-  let labeledCommands = false;
-  let labeledCopies = false;
-  items.forEach((item, index) => {
-    if (item.command && !labeledCommands) {
-      const label = document.createElement("div");
-      label.className = "group";
-      label.textContent = "Commands";
-      list.append(label);
-      labeledCommands = true;
-    }
-    if (!item.command && !labeledCopies) {
-      const label = document.createElement("div");
-      label.className = "group";
-      label.textContent = view === "prompts" ? "Prompts" : view === "pinned" ? "Pinned" : "Copies";
-      list.append(label);
-      labeledCopies = true;
-    }
-    const row = document.createElement("div");
-    row.className = "row";
-    row.setAttribute("role", "option");
-    row.setAttribute("aria-selected", index === selected ? "true" : "false");
-    const line = document.createElement("div");
-    line.className = "line";
-    const kind = document.createElement("span");
-    kind.className = "kind";
-    kind.dataset.kind = item.kind;
-    kind.textContent = index < 9 ? (index + 1) + "  " + (labels[item.kind] || "Text") : (labels[item.kind] || "Text");
-    if (item.image) {
-      const thumb = document.createElement("img");
-      thumb.className = "thumb";
-      thumb.alt = "";
-      thumb.src = "/api/image?id=" + item.id + "&k=" + encodeURIComponent(token);
-      line.append(thumb);
-    }
-    const text = document.createElement("span");
-    text.className = "text";
-    text.textContent = item.preview || "Empty copy";
-    line.append(kind, text);
-    const meta = document.createElement("div");
-    meta.className = "meta";
-    const parts = [];
-    if (item.pinned) parts.push("Pinned");
-    parts.push(ago(item.captured_at));
-    if (item.app) parts.push(item.app);
-    if (item.device && item.device !== deviceEl.dataset.home) parts.push(item.device);
-    meta.textContent = parts.join("  ·  ");
-    row.append(line, meta);
-    row.addEventListener("mouseenter", () => { if (selected !== index) { selected = index; paint(); } });
-    row.addEventListener("dblclick", () => paste());
-    list.append(row);
-  });
-  const active = list.querySelector('[aria-selected="true"]');
-  if (active) active.scrollIntoView({ block: "nearest" });
-  renderPreview();
+async function renderPreview(){
+ const item=current(),version=++detailVersion;if(detailController)detailController.abort();syncActions();
+ if(!item){preview.replaceChildren(element("div","Select a capture to see its full text. Save an idea directly, or use the views above to find a prompt.","empty"));input.removeAttribute("aria-activedescendant");return}
+ input.setAttribute("aria-activedescendant","copy-"+item.id);
+ const heading=element("h2",labels[item.kind]||"Text");
+ const meta=element("div",[stamp(item.captured_at),item.app,item.title,item.use_case&&"Use: "+item.use_case,item.state].filter(Boolean).join(" · "),"meta");
+ const body=element("div",item.body||(!item.stored?"The payload was excluded or this format could not be stored.":""),"body");
+ body.dataset.code=String(["code","command"].includes(item.kind));const parts=[heading,meta];
+ if(item.copies>1)parts.push(element("div",item.copies+" copy occurrences retained.","meta"));
+ if(item.reason)parts.push(element("p",item.reason,"why"));
+ if(item.incomplete)parts.push(element("p","This capture exceeded the text limit. The retained text is incomplete.","why"));
+ if(item.image){const img=element("img");img.className="shot";img.alt="Copied picture";img.src="/api/image?id="+item.id+"&k="+encodeURIComponent(token);parts.push(img)}
+ parts.push(body);preview.replaceChildren(...parts);
+ if(item.more){detailController=new AbortController();try{const data=await request("/api/detail?id="+item.id,{signal:detailController.signal});if(version===detailVersion&&current()?.id===item.id)body.textContent=data.body}catch(error){if(error.name!=="AbortError")message("Full preview could not load. Select the item again to retry.",true)}}
 }
-
-function paint() {
-  const rows = list.querySelectorAll(".row");
-  if (rows.length !== items.length) { render(); return; }
-  rows.forEach((row, index) => row.setAttribute("aria-selected", index === selected ? "true" : "false"));
-  const active = list.querySelector('[aria-selected="true"]');
-  if (active) active.scrollIntoView({ block: "nearest" });
-  renderPreview();
+function select(index,scroll=true){selected=index;list.querySelectorAll("[role=option]").forEach((row,i)=>row.setAttribute("aria-selected",String(i===selected)));if(scroll)list.querySelector('[aria-selected="true"]')?.scrollIntoView({block:"nearest"});renderPreview()}
+function render(){
+ list.replaceChildren();if(!items.length){list.append(element("div","No matching captures. Clear filters or save an idea to start.","empty"));selected=-1;renderPreview();return}
+ items.forEach((item,index)=>{const row=element("button");row.type="button";row.className="row";row.id="copy-"+item.id;row.tabIndex=-1;row.setAttribute("role","option");row.setAttribute("aria-selected",String(index===selected));
+ row.append(element("span",item.preview||"Picture","text"),element("span",[labels[item.kind]||"Text",item.use_case,item.pinned&&"Pinned",stamp(item.captured_at),item.app].filter(Boolean).join(" · "),"meta"));
+ row.addEventListener("click",()=>{select(index,false);input.focus({preventScroll:true})});row.addEventListener("dblclick",()=>act("/api/paste"));list.append(row)});renderPreview();
 }
-
-function visibleCopies() {
-  if (view === "prompts") return copies.filter((item) => item.kind === "prompt");
-  if (view === "pinned") return copies.filter((item) => item.pinned);
-  return copies;
+async function load(){
+ const version=++loadVersion,id=current()?.id;if(loadingController)loadingController.abort();loadingController=new AbortController();list.setAttribute("aria-busy","true");
+ try{const data=await request("/api/items?q="+encodeURIComponent(query()),{signal:loadingController.signal});if(version!==loadVersion)return;
+ items=data.items||[];selected=Math.max(0,items.findIndex(item=>item.id===id));if(!items.length)selected=-1;render();$("retry").hidden=true;message(items.length+" matching captures"+(items.length===100?" · refine the search to see older items.":"."))}
+ catch(error){if(error.name!=="AbortError"&&version===loadVersion){message(error.message,true);$("retry").hidden=false}}finally{if(version===loadVersion)list.setAttribute("aria-busy","false")}
 }
-
-function applyView() {
-  const raw = input.value.trim();
-  const typed = raw.startsWith(">") ? commands.filter((item) => item.preview.toLowerCase().includes(raw.slice(1).trim().toLowerCase())) : [];
-  const shown = raw.startsWith(">") ? typed : (raw ? [] : commands).concat(visibleCopies());
-  items = raw.startsWith(">") || !raw ? shown : visibleCopies();
-  if (raw && !raw.startsWith(">")) items = copies;
+async function health(){
+ try{const data=await request("/api/health");$("health").textContent=(data.collector_running?"Capture running":"Capture stopped")+" · "+(data.records||0)+" kept";
+ $("health").title=(data.last_capture_at?"Last capture: "+stamp(data.last_capture_at):"No captures yet")+(data.last_backup?" · Last backup: "+stamp(data.last_backup.created_at):" · No verified backup yet")+(data.last_error?" · "+data.last_error:"")}
+ catch{$("health").textContent="Collector unavailable"}
 }
-
-async function load() {
-  const raw = input.value.trim();
-  if (raw.startsWith(">")) {
-    applyView();
-    selected = 0;
-    render();
-    return;
-  }
-  const response = await fetch("/api/items?k=" + encodeURIComponent(token) + "&q=" + encodeURIComponent(raw));
-  const data = await response.json();
-  copies = data.items || [];
-  deviceEl.dataset.home = data.device || "";
-  deviceEl.textContent = "Starlight";
-  applyView();
-  selected = 0;
-  render();
+async function act(path,extra={}){
+ const item=current();if(!item)return;
+ try{await request(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:item.id,...extra})});if(path==="/api/paste")return;await load();
+ message(path==="/api/brain"?"Filed one local note. Memory-index retrieval is a separate check.":path==="/api/book"?"Saved privately to your prompt book.":"Updated the selected capture.")}
+ catch(error){message(error.message,true)}
 }
-
-async function post(path, extra, id) {
-  const itemId = id || (current() && current().id);
-  if (!itemId || String(itemId).startsWith("cmd-")) return null;
-  const response = await fetch(path + "?k=" + encodeURIComponent(token), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(Object.assign({ id: itemId }, extra || {})),
-  });
-  return response.json();
-}
-
-function runCommand(item) {
-  if (item.command === "prompts") { view = "prompts"; input.value = ""; load(); }
-  if (item.command === "pinned") { view = "pinned"; input.value = ""; load(); }
-  if (item.command === "book") book();
-  if (item.command === "brain") brain();
-}
-
-async function paste() {
-  const item = current();
-  if (item && item.command) { runCommand(item); return; }
-  if (!item || !item.stored) return;
-  const result = await post("/api/paste");
-  if (result && result.ok) window.close();
-}
-
-async function pin() {
-  const item = current();
-  if (!item || item.command) return;
-  await post("/api/pin", { pinned: item.pinned ? 0 : 1 });
-  await load();
-}
-
-async function book() {
-  const selectedItem = current();
-  const item = selectedItem && selectedItem.stored && !selectedItem.command ? selectedItem : copies.find((row) => row.stored && row.kind !== "image");
-  if (!item || !item.stored || item.kind === "image") return;
-  await post("/api/book", { scope: "starlight" }, item.id);
-  await load();
-}
-
-async function brain() {
-  const selectedItem = current();
-  const status = document.getElementById("status");
-  let item = null;
-  if (selectedItem && selectedItem.command) {
-    item = copies.find((row) => row.stored && row.kind !== "image" && row.kind !== "secret");
-  } else if (selectedItem && selectedItem.stored && selectedItem.kind !== "image" && selectedItem.kind !== "secret") {
-    item = selectedItem;
-  }
-  if (!item) {
-    if (status) status.textContent = "That copy stays out of the second brain";
-    return;
-  }
-  const result = await post("/api/brain", {}, item.id);
-  if (status) status.textContent = result && result.ok ? "Filed one note in the second brain" : "That copy stays out of the second brain";
-}
-
-function closePanel() {
-  fetch("/api/hide?k=" + encodeURIComponent(token));
-}
-
-async function removeItem() {
-  const item = current();
-  if (!item || item.command) return;
-  await post("/api/delete");
-  await load();
-}
-
-input.addEventListener("input", () => {
-  clearTimeout(timer);
-  timer = setTimeout(load, 50);
+document.querySelectorAll("[data-view]").forEach(button=>button.addEventListener("click",()=>{view=button.dataset.view;document.querySelectorAll("[data-view]").forEach(b=>b.setAttribute("aria-pressed",String(b===button)));load()}));
+$("paste").onclick=()=>act("/api/paste");$("copy").onclick=()=>act("/api/copy");$("pin").onclick=()=>act("/api/pin",{pinned:current()?.pinned?0:1});
+$("book").onclick=()=>act("/api/book",{scope:"starlight"});$("brain").onclick=()=>act("/api/brain");$("archive").onclick=()=>act("/api/state",{state:current()?.state==="archived"?"active":"archived"});
+$("backup").onclick=async()=>{$("backup").disabled=true;try{const data=await request("/api/backup",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});message("Verified local snapshot: "+data.snapshot);health()}catch(error){message(error.message,true)}finally{$("backup").disabled=false}};
+function closeIdea(){$("idea").hidden=true;$("new-idea").setAttribute("aria-expanded","false");input.focus()}
+$("new-idea").onclick=()=>{$("idea").hidden=false;$("new-idea").setAttribute("aria-expanded","true");$("idea-text").focus()};$("cancel-idea").onclick=closeIdea;
+$("idea").onsubmit=async event=>{event.preventDefault();const text=$("idea-text").value;if(!text.trim()){message("Write an idea before saving.",true);return}const button=$("idea").querySelector('[type=submit]');button.disabled=true;
+ try{await request("/api/add",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({text})});$("idea-text").value="";closeIdea();await load();health();message("Idea saved locally.")}catch(error){message(error.message,true)}finally{button.disabled=false}};
+input.oninput=()=>{clearTimeout(timer);timer=setTimeout(load,80)};$("date").onchange=load;
+$("clear").onclick=()=>{input.value="";$("date").value="";view="all";document.querySelectorAll("[data-view]").forEach(b=>b.setAttribute("aria-pressed",String(b.dataset.view==="all")));load();input.focus()};
+$("retry").onclick=()=>{load();health()};
+window.addEventListener("keydown",event=>{
+ if(event.key==="Escape"){event.preventDefault();if(!$("idea").hidden)closeIdea();else request("/api/hide").catch(()=>message("Press the window close control to hide.",true));return}
+ if(event.target!==input)return;
+ if(event.key==="ArrowDown"&&items.length){event.preventDefault();select(Math.min(items.length-1,selected+1))}
+ if(event.key==="ArrowUp"&&items.length){event.preventDefault();select(Math.max(0,selected-1))}
+ if(event.key==="Enter"){event.preventDefault();act(event.ctrlKey?"/api/book":"/api/paste",{scope:"starlight"})}
+ if(event.ctrlKey&&event.key.toLowerCase()==="p"){event.preventDefault();$("pin").click()}
 });
-window.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") { event.preventDefault(); closePanel(); return; }
-  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); book(); return; }
-  if (event.key === "Enter") { event.preventDefault(); paste(); return; }
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "p") { event.preventDefault(); pin(); return; }
-  if (event.ctrlKey && event.key === "Backspace") { event.preventDefault(); removeItem(); return; }
-  if (!input.value && event.key >= "1" && event.key <= "9") {
-    const index = Number(event.key) - 1;
-    if (items[index]) { event.preventDefault(); selected = index; paste(); return; }
-  }
-  if (event.key === "ArrowDown" && items.length) { event.preventDefault(); selected = Math.min(items.length - 1, selected + 1); paint(); }
-  if (event.key === "ArrowUp" && items.length) { event.preventDefault(); selected = Math.max(0, selected - 1); paint(); }
-});
-window.addEventListener("focus", () => { input.focus(); load(); });
-load();
-input.focus();
-</script>
-</body>
-</html>
+window.addEventListener("focus",()=>{health();if($("idea").hidden)input.focus()});load();health();input.focus();setInterval(health,15000);
+</script></body></html>
