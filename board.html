@@ -107,7 +107,7 @@ async function act(path,extra={}){
 }
 document.querySelectorAll("[data-view]").forEach(button=>button.addEventListener("click",()=>{view=button.dataset.view;document.querySelectorAll("[data-view]").forEach(b=>b.setAttribute("aria-pressed",String(b===button)));load()}));
 $("paste").onclick=()=>act("/api/paste");$("copy").onclick=()=>act("/api/copy");$("pin").onclick=()=>act("/api/pin",{pinned:current()?.pinned?0:1});
-$("book").onclick=()=>act("/api/book",{scope:"starlight"});$("brain").onclick=()=>act("/api/brain");$("archive").onclick=()=>act("/api/state",{state:current()?.state==="archived"?"active":"archived"});
+$("book").onclick=()=>act("/api/book",{scope:current()?.use_case==="suno"?"suno":"starlight"});$("brain").onclick=()=>act("/api/brain");$("archive").onclick=()=>act("/api/state",{state:current()?.state==="archived"?"active":"archived"});
 $("backup").onclick=async()=>{$("backup").disabled=true;$("backup").textContent="Backing up…";try{const data=await request("/api/backup",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});message(data.encrypted?"Encrypted snapshot saved to the configured repository. Off-device recovery is a separate check.":"Verified local snapshot: "+data.snapshot);health()}catch(error){message(error.message,true)}finally{$("backup").disabled=false;$("backup").textContent="Back up"}};
 function closeIdea(){$("idea").hidden=true;$("new-idea").setAttribute("aria-expanded","false");input.focus()}
 $("new-idea").onclick=()=>{$("idea").hidden=false;$("new-idea").setAttribute("aria-expanded","true");$("idea-text").focus()};$("cancel-idea").onclick=closeIdea;
@@ -121,7 +121,7 @@ window.addEventListener("keydown",event=>{
  if(event.target!==input)return;
  if(event.key==="ArrowDown"&&items.length){event.preventDefault();select(Math.min(items.length-1,selected+1))}
  if(event.key==="ArrowUp"&&items.length){event.preventDefault();select(Math.max(0,selected-1))}
- if(event.key==="Enter"){event.preventDefault();act(event.ctrlKey?"/api/book":"/api/paste",{scope:"starlight"})}
+ if(event.key==="Enter"){event.preventDefault();act(event.ctrlKey?"/api/book":"/api/paste",{scope:current()?.use_case==="suno"?"suno":"starlight"})}
  if(event.ctrlKey&&event.key.toLowerCase()==="p"){event.preventDefault();$("pin").click()}
 });
 window.addEventListener("focus",()=>{health();if($("idea").hidden)input.focus()});load();health();input.focus();setInterval(health,15000);

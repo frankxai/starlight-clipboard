@@ -21,6 +21,10 @@ import clip_store
 MAX_RESPONSE = 2 * 1024 * 1024
 
 
+class WriteNotStarted(ValueError):
+    """A preflight refusal with no canonical write attempted."""
+
+
 @contextmanager
 def operation_lease(root: Path, name: str):
     path = root/"data"/(name + ".lock")
@@ -28,7 +32,7 @@ def operation_lease(root: Path, name: str):
     try:
         handle = path.open("x", encoding="utf-8")
     except FileExistsError:
-        raise ValueError("This backup operation is already reserved. Preserve the existing writer lease.") from None
+        raise ValueError("Another operation owns this writer lease. Retry after it completes; preserve the lease.") from None
     try:
         handle.write(json.dumps({"pid": os.getpid(), "created_at": clip_store.now()}))
         handle.close()
@@ -201,12 +205,19 @@ def canonical_write(settings, summary, content):
     script = Path(settings["script"])
     for relative, expected in settings["source_hashes"].items():
         source = script.parent.parent / relative
-        if hashlib.sha256(source.read_bytes()).hexdigest() != expected:
-            raise ValueError("Canonical memory source changed; recheck and reconfigure the binding.")
+        try:
+            actual = hashlib.sha256(source.read_bytes()).hexdigest()
+        except OSError:
+            raise WriteNotStarted("Canonical memory source is unavailable; recheck the binding. No write started.") from None
+        if actual != expected:
+            raise WriteNotStarted("Canonical memory source changed; recheck and reconfigure the binding. No write started.")
     command = [settings["node"], str(script), "mcp", "serve", "--vault", settings["vault"],
                "--profile", "writes", "--embeddings", "off", "--tenant", settings["tenant"]]
-    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                               text=True, encoding="utf-8", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    try:
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                   text=True, encoding="utf-8", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except OSError:
+        raise WriteNotStarted("Canonical memory writer is unavailable. Recheck the binding; no write started.") from None
     messages = queue.Queue()
     def reader():
         try:
@@ -311,6 +322,10 @@ def remember(root: Path, row, settings=None, *, plane_factory=Plane, writer=cano
                         if not match:
                             raise ValueError("Canonical memory did not return a confirmed write receipt.")
                         receipt.update(memory_id=match[1], state="stored_pending_recall", stored_at=clip_store.now())
+                    except WriteNotStarted as error:
+                        receipt.update(state="not_started", error=str(error))
+                        clip_store.atomic_text(path, json.dumps(receipt, indent=2))
+                        raise ValueError(str(error)) from None
                     except Exception:
                         receipt.update(state="outcome_unknown", error="Reconcile the canonical writer before retrying.")
                         clip_store.atomic_text(path, json.dumps(receipt, indent=2))

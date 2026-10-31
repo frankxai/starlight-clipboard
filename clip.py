@@ -34,6 +34,7 @@ FABRIC_BOOKS = {
     "arcanea": "arcanea-studio",
     "frankx": "frankx-commercial",
     "general": "general",
+    "suno": "suno-music",
 }
 MUTEX_NAME = "Local\\StarlightClipboardIndex"
 MAX_READ = 1_000_000
@@ -1732,14 +1733,16 @@ def entry_title(body: str) -> str:
     return " ".join(words)[:72]
 
 
-def find_fabric_entry(clip_id: int) -> Path | None:
+def find_fabric_entry(clip_id: int, scope: str | None = None) -> Path | None:
     conn = connect()
     try:
         init_db(conn)
         row = fetch(conn,clip_id)
         if row is None:
             return None
-        recorded = conn.execute("SELECT path FROM clip_promotions WHERE clip_uid=? LIMIT 1",(row["uid"],)).fetchone()
+        recorded = conn.execute("SELECT path FROM clip_promotions WHERE clip_uid=?" +
+                                (" AND destination=?" if scope else "") + " LIMIT 1",
+                                (row["uid"], scope) if scope else (row["uid"],)).fetchone()
         if recorded and Path(recorded[0]).is_file():
             return Path(recorded[0])
     finally:
@@ -1750,7 +1753,7 @@ def find_fabric_entry(clip_id: int) -> Path | None:
     uid_needle = f"clip_uid: {quote_yaml(row['uid'])}\n"
     legacy_id = f"clip_id: {clip_id}\n"
     date_needle = f"captured_at: {quote_yaml(row['captured_at'])}\n"
-    for path in books.glob("*/entries/*.md"):
+    for path in books.glob((FABRIC_BOOKS[scope] if scope else "*") + "/entries/*.md"):
         if path.is_symlink():
             continue
         with path.open(encoding="utf-8") as handle:
@@ -1761,10 +1764,11 @@ def find_fabric_entry(clip_id: int) -> Path | None:
 
 
 def promote(clip_id: int, scope: str) -> int:
-    book = FABRIC_BOOKS.get(scope)
-    if book is None:
-        emit("Scope must be frank, starlight, arcanea, frankx, or general.")
-        return 2
+    with clip_integrations.operation_lease(paths()["root"], "prompt-book"):
+        return _promote(clip_id, scope)
+
+
+def _promote(clip_id: int, scope: str) -> int:
     conn = connect()
     try:
         init_db(conn)
@@ -1774,10 +1778,16 @@ def promote(clip_id: int, scope: str) -> int:
     if row is None:
         emit(f"No copy #{clip_id}.")
         return 1
+    if scope == "auto":
+        scope = "suno" if row["use_case"] == "suno" else "frank"
+    book = FABRIC_BOOKS.get(scope)
+    if book is None:
+        emit("Scope must be auto, frank, starlight, arcanea, frankx, general, or suno.")
+        return 2
     if not row["body"]:
         emit("That copy has no stored text to curate.")
         return 1
-    existing = find_fabric_entry(clip_id)
+    existing = find_fabric_entry(clip_id, scope)
     if existing:
         record_promotion(row, scope, existing)
         emit(str(existing))
@@ -1792,7 +1802,8 @@ def promote(clip_id: int, scope: str) -> int:
     fence = "````" if "```" in body else "```"
     captured = row["captured_at"]
     day = fmt_time(captured)[:10]
-    entry = entries / f"{number:04d}-clip-{row['uid'][:12]}.md"
+    source_key = hashlib.sha256(row['uid'].encode()).hexdigest()[:16]
+    entry = entries / f"{number:04d}-clip-{source_key}.md"
     text = "\n".join(
         [
             "---",
@@ -1970,7 +1981,8 @@ def remember_one(clip_id: int) -> int:
     title = entry_title(body)
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:48] or "copy"
     digest = hashlib.sha256(body.encode("utf-8")).hexdigest()[:6]
-    memory_id = f"clipboard-{row['uid'][:12]}-{slug}-{digest}"
+    source_key = hashlib.sha256(row['uid'].encode()).hexdigest()[:16]
+    memory_id = f"clipboard-{source_key}-{slug}-{digest}"
     reason = ""
     try:
         extra = json.loads(row["extra_json"] or "{}")
@@ -2592,7 +2604,10 @@ def start_panel_server() -> None:
                 return
             if path == "/api/book":
                 scope = "frank" if str(payload.get("kind") or "") == "prompt" else str(payload.get("scope") or "starlight")
-                self._json(200, {"ok": promote(clip_id, scope) == 0})
+                try:
+                    self._json(200, {"ok": promote(clip_id, scope) == 0})
+                except (ValueError, OSError, sqlite3.Error) as error:
+                    self._json(503, {"ok":False,"error":str(error) or "Prompt filing needs attention. The source is retained."})
                 return
             if path == "/api/brain":
                 try:
@@ -2812,7 +2827,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     promote_cmd = sub.add_parser("promote", help="File a copy into the private prompt fabric")
     promote_cmd.add_argument("id", type=int)
-    promote_cmd.add_argument("--scope", default="frank")
+    promote_cmd.add_argument("--scope", default="auto")
 
     remember_cmd = sub.add_parser("remember", help="File one copy in the second brain")
     remember_cmd.add_argument("id", type=int)

@@ -110,6 +110,31 @@ class DurableCapture(unittest.TestCase):
         self.assertEqual(len(list((self.root / "fabric").glob("books/*/entries/*.md"))), 1)
         self.assertEqual(self.rows("SELECT state,pinned FROM clips")[0][:], ("saved", 1))
 
+    def test_migrated_source_ids_do_not_collide_in_note_filenames(self):
+        first = clip.ingest("An idea repeated on separate days")
+        clip.ingest("A separate intervening copy")
+        second = clip.ingest("An idea repeated on separate days")
+        with contextlib.closing(clip.connect()) as conn:
+            for item in [first,second]:
+                conn.execute("UPDATE clips SET uid=? WHERE id=?",("shared-migration-store:"+str(item['id']),item['id']))
+            conn.commit()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(clip.remember_one(first['id']),0)
+            self.assertEqual(clip.remember_one(second['id']),0)
+        notes=list((self.root/"vault/atoms").glob('clipboard-*.md'))
+        self.assertEqual(len(notes),2)
+        for item in [first,second]:
+            self.assertTrue(any('shared-migration-store:'+str(item['id'])+'"' in p.read_text() for p in notes))
+
+    def test_prompt_books_keep_separate_scope_receipts(self):
+        item=clip.ingest("Cinematic piano and strings, 84 BPM, instrumental")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(clip.promote(item['id'],'starlight'),0)
+            self.assertEqual(clip.promote(item['id'],'suno'),0)
+            self.assertEqual(clip.promote(item['id'],'suno'),0)
+        self.assertEqual(len(list((self.root/"fabric/books").glob('*/entries/*.md'))),2)
+        self.assertEqual(len(list((self.root/"fabric/books/suno-music/entries").glob('*.md'))),1)
+
     def test_sealed_vault_cannot_receive_memory_export(self):
         item = clip.ingest("A note for the working knowledge inbox")
         with patch.dict(os.environ, {"STARLIGHT_VAULT": str(self.root / "private")}):

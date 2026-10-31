@@ -93,6 +93,12 @@ Music hints use local rules. A short style string with instruments and BPM can b
 
 Prompt books retain the original capture, stable source UID and source date. Repeated promotion is idempotent for that source. Public `frankxai/prompt-library` remains a separate reviewed corpus; nothing is pushed there.
 
+Music candidates save to the private `suno-music` book from the library window or
+`clips promote <id>` using automatic scope. Explicit `--scope` choices remain
+available. A source can belong to more than one private book without duplicate
+entries in the same book. File identities hash the full source UID so migrated
+records that share an ID prefix cannot overwrite one another.
+
 With canonical memory configured, `clips remember` uses the existing Starlight Memory writer with its bound vault and tenant, then verifies the source UID, content hash and retained text through the authenticated shared reader. The writer starts only for this operation and exits afterward; embeddings stay off. The interface distinguishes verified recall from a stored note awaiting verification. Receipts prevent duplicate filing, including uncertain write outcomes. Source changes require review and rebinding. Notes over 12,000 characters require a shorter selection; their full source remains in the archive.
 
 Without that binding, `clips remember` exports one local Markdown atom beneath the Clipboard runtime. An explicit `STARLIGHT_VAULT` can select a permitted export destination. It does not automatically write into the canonical repository. Sealed `private/` or private-vault paths are refused, including resolved links. A local export does not prove shared indexing or agent retrieval.

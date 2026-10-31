@@ -68,6 +68,16 @@ class IntegrationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown|reconcile"):
             self.memory(lambda *args: self.fail("Must not write again"))
 
+    def test_preflight_refusal_can_retry_after_binding_is_repaired(self):
+        def unavailable(*args):
+            raise integration.WriteNotStarted("source changed; no write started")
+        with self.assertRaisesRegex(ValueError,"no write started"):
+            self.memory(unavailable)
+        def writer(settings, summary, content):
+            FakePlane.reads['clipboard-id'] = content
+            return 'Remembered [clipboard-id] -> atoms/clipboard-id.md'
+        self.assertEqual(self.memory(writer)['state'],'recall_verified')
+
     def test_read_failure_preserves_confirmed_write_receipt(self):
         result = self.memory(lambda *args: "Remembered [clipboard-id] -> atoms/clipboard-id.md")
         self.assertEqual(result["state"], "stored_pending_recall")
