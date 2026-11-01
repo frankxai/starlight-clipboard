@@ -12,8 +12,8 @@ import sqlite3
 from datetime import datetime, timezone, timedelta
 import uuid
 
-VERSION = "2026.10.31.6"
-SCHEMA_VERSION = 3
+VERSION = "2026.11.01.7"
+SCHEMA_VERSION = 4
 STATES = {"active", "saved", "resolved", "archived"}
 MUSIC = re.compile(r"(?i)\b(piano|strings|guitar|synth|orchestral|cinematic|ambient|lo-fi|techno|trance|house|drums|vocals?|instrumental|chorus|verse|suno)\b")
 BPM = re.compile(r"(?i)\b(\d{2,3})\s*bpm\b")
@@ -75,6 +75,8 @@ def migrate(conn: sqlite3.Connection, device: str) -> None:
         # and add only the one occurrence for which a source timestamp exists.
     import clip_library
     clip_library.migrate(conn)
+    import clip_history
+    clip_history.migrate(conn)
     conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
     conn.commit()
 

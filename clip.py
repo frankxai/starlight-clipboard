@@ -20,6 +20,7 @@ import uuid
 import clip_store
 import clip_integrations
 import clip_library
+import clip_history
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 from ctypes import wintypes
@@ -1420,6 +1421,7 @@ def acquire_mutex() -> bool:
 
 def health_snapshot() -> dict:
     location = paths()
+    history_enabled = False
     info = {"version":clip_store.VERSION,"collector_running":watcher_running(),"retention":"keep",
             "cloud_processing":False,"last_error":PANEL.get("last_error"),"database":str(location["db"])}
     if location["db"].exists():
@@ -1427,6 +1429,7 @@ def health_snapshot() -> dict:
         try:
             info["records"],info["last_capture_at"] = conn.execute("SELECT count(*),max(last_seen_at) FROM clips").fetchone()
             if conn.execute("PRAGMA user_version").fetchone()[0]>=2:
+                history_enabled = clip_history.enabled(conn)
                 info["pending_exports"] = conn.execute("SELECT count(*) FROM clip_jobs WHERE status='pending'").fetchone()[0]
                 info["occurrences"] = conn.execute("SELECT count(*) FROM clip_occurrences").fetchone()[0]
                 counts = conn.execute("""SELECT count(*),
@@ -1450,7 +1453,57 @@ def health_snapshot() -> dict:
     info["navigation"] = PANEL.get("navigation")
     info["suite"] = {"app_id": "clipboard", "music_collections": True,
         "portable_library": "manual-handoff", "account_sync": "not-configured"}
+    info["windows_history"] = {**clip_history.status(location["root"]), "enabled": history_enabled, "interval_seconds": 60}
     return info
+
+
+def history_call(action: str) -> dict:
+    conn = connect()
+    try:
+        init_db(conn)
+        if action in {"enable", "disable"}:
+            return clip_history.configure(conn, action == "enable")
+        if action == "status":
+            return {**clip_history.status(paths()["root"]), "enabled": clip_history.enabled(conn)}
+        if not clip_history.enough_memory():
+            raise ValueError("Windows history is deferred until the 4 GiB memory floor plus its helper reserve is available.")
+        packet = clip_history.read_native(action == "inspect", SENSITIVE_APPS, SENSITIVE_TITLE.pattern)
+        if action == "inspect":
+            return {key: packet.get(key) for key in ("status", "history_enabled", "roaming_enabled", "available", "skipped")}
+        return clip_history.apply(conn, packet, device=this_device(), scrub=redact,
+            classify=classify_text, excluded=sensitive_source, preview=action == "preview")
+    finally:
+        conn.close()
+
+
+def history_cycle() -> None:
+    root = paths()["root"]
+    result = {"state": "unavailable", "checked_at": clip_store.now()}
+    try:
+        conn = connect()
+        try:
+            init_db(conn)
+            if not clip_history.enabled(conn):
+                return
+        finally:
+            conn.close()
+        if not clip_history.enough_memory():
+            result["state"] = "deferred-memory"
+        else:
+            packet = clip_history.read_native(excluded_apps=SENSITIVE_APPS, sensitive_title_pattern=SENSITIVE_TITLE.pattern)
+            conn = connect()
+            try:
+                init_db(conn)
+                if not clip_history.enabled(conn):
+                    return
+                result.update(clip_history.apply(conn, packet, device=this_device(), scrub=redact,
+                    classify=classify_text, excluded=sensitive_source))
+                result.update({key: packet.get(key) for key in ("history_enabled", "roaming_enabled", "available")})
+            finally:
+                conn.close()
+    except (OSError, ValueError, sqlite3.Error, subprocess.SubprocessError):
+        result["state"] = "unavailable"
+    clip_store.atomic_text(root/"data/windows-history.json", json.dumps(result))
 
 
 def watch() -> int:
@@ -1473,6 +1526,7 @@ def watch() -> int:
     hot_hwnd = install_hotkey()
     start_panel_server()
     last_housekeeping = 0.0
+    last_history = 0.0
     last_export = 0.0
     last_event = time.monotonic()
     last_sequence = user32.GetClipboardSequenceNumber()
@@ -1512,6 +1566,13 @@ def watch() -> int:
                 last_export = time.monotonic()
             if time.monotonic()-last_housekeeping > 10:
                 root = paths()["root"]
+                history_worker = PANEL.get("history_worker")
+                if time.monotonic()-last_history > 60 and not (history_worker and history_worker.is_alive()):
+                    # One bounded helper; primary clipboard capture keeps its own lane.
+                    history_worker = threading.Thread(target=history_cycle, name="clipboard-history", daemon=False)
+                    PANEL["history_worker"] = history_worker
+                    history_worker.start()
+                    last_history = time.monotonic()
                 worker = PANEL.get("backup_worker")
                 if clip_integrations.status(root).get("daily_backup_enabled") and not (worker and worker.is_alive()) and clip_integrations.backup_due(root):
                     worker = threading.Thread(target=clip_integrations.backup_cycle, args=(root,), name="clipboard-backup", daemon=False)
@@ -1724,7 +1785,7 @@ def stop() -> int:
     flag = paths()["stop"]
     flag.parent.mkdir(parents=True, exist_ok=True)
     flag.write_text("stop\n", encoding="ascii")
-    for _ in range(20):
+    for _ in range(70):
         if not watcher_running():
             emit("Clipboard collector stopped.")
             return 0
@@ -2925,6 +2986,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("fabric", help="List curated prompt-fabric entries")
     sub.add_parser("board", help="Open the clipboard window")
     sub.add_parser("music", help="Open the music prompt workspace")
+    history = sub.add_parser("history", help="Inspect and import the official Windows clipboard history")
+    history.add_argument("action", choices=("status", "inspect", "preview", "import", "enable", "disable"), default="status", nargs="?")
     library = sub.add_parser("library", help="Private collections, labels and portable handoffs")
     library.add_argument("action", choices=("list", "create", "tag", "assign", "unassign", "suggest", "export", "import"))
     library.add_argument("--id", type=int)
@@ -3009,6 +3072,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             result = library_call({"list": "list", "suggest": "suggestions"}[args.action], {"id": args.id})
         emit(json.dumps(result, ensure_ascii=False))
+        return 0
+    if command == "history":
+        emit(json.dumps(history_call(args.action), ensure_ascii=False))
         return 0
     if command in (None, "recent"):
         return recent(getattr(args, "kind", None), getattr(args, "limit", 20))

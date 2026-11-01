@@ -47,7 +47,7 @@ class MusicLibrary(unittest.TestCase):
             conn.execute("PRAGMA user_version=2"); conn.commit()
             clip.init_db(conn)
             self.assertEqual(conn.execute("SELECT count(*) FROM clip_occurrences").fetchone()[0], before)
-            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 4)
 
     def test_tags_smart_and_manual_collections_keep_original(self):
         with self.database() as conn:

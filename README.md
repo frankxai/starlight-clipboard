@@ -2,7 +2,7 @@
 
 A private Windows clipboard archive with a shortcut palette and searchable prompt library. It listens beside Windows clipboard history and keeps Win+V available.
 
-Open **Starlight Clipboard** from the Start menu, or press **Ctrl+Alt+V** while capture is running. Your copies stay on this PC. Cloud inference and external publishing are disabled.
+Open **Starlight Clipboard** from the Start menu, or press **Ctrl+Alt+V** while capture is running. Starlight retains originals locally and makes no cloud inference or publishing requests. Microsoft clipboard sync is a separate Windows setting.
 
 Open **Starlight Music** from the same Start-menu folder, or run `clips music`, for the music workspace. Both entry points use the same collector and retained originals.
 
@@ -77,6 +77,78 @@ clips library import --file <private-handoff.json>
 Import retains source identities and dates, reuses matching originals and refuses conflicting source content. Differing collection definitions become explicit imported variants. Existing local labels remain. Repeating a handoff is idempotent. Import is atomic and rejects unsupported fields and protected sources. This is a manual handoff; automatic sync, account login, revocation and encryption-key recovery remain a separate shared-platform stage. Full encrypted snapshots include the collections and labels.
 
 The existing Nexus app-center connector uses authenticated `/api/health` and `/api/raise` against the private runtime binding. It never requests original bodies for inventory. [The integration reference](integrations/starlight-app.json) documents the fixed companion identity and CLI. No parallel app center or account authority is installed here.
+
+## Windows history and Microsoft transport
+
+The optional history bridge reads the official Windows clipboard-history API.
+It can archive eligible text that reached Win+V without becoming the current
+clipboard. It preserves the Windows timestamp and marks the original device as
+unknown. Repeated scans reuse receipts; nearby native captures are matched rather
+than counted twice. Source conflicts roll back the import.
+
+```powershell
+clips history inspect
+clips history preview
+clips history import
+clips history enable
+clips history status
+clips history disable
+```
+
+`inspect` reports OS metadata; `preview` reports counts without importing captures.
+`enable` opts the existing collector into one scan per minute. It adds no scheduled
+task or separate service. One helper is allowed at a time, bounded to 12 seconds;
+low memory defers it. Disabling during a read prevents the subsequent import.
+
+Windows exposes at most its current history window, not an unlimited historical
+feed. The bridge handles up to 25 entries, 100,000 characters per text original
+and a bounded response. Protected formats and known protected application metadata
+are checked before text retrieval; credential-like text is skipped. Windows often
+omits the original app/title/device, so the bridge cannot reconstruct all original
+source-based exclusions. Images, oversize/unavailable entries and deadline skips
+are counted. Originals already in Starlight are not deleted.
+
+For Android-to-Windows transport, Microsoft SwiftKey's Cloud Clipboard can sync
+the latest text clip through the same personal Microsoft account. In SwiftKey,
+open **Rich input → Clipboard → Sync clipboard history to the cloud**. On Windows,
+use **Settings → System → Clipboard** for history and device sync. Microsoft retains
+only the latest cloud clip for about one hour. This does not guarantee that every
+mobile copy reaches Starlight, particularly while a PC is asleep or sync is delayed.
+[Microsoft instructions](https://support.microsoft.com/en-au/swiftkey-keyboard/how-to-use-microsoft-swiftkey-keyboard-to-copy-and-paste-text-between-swiftkey-and-windows).
+
+## Offline mobile companion
+
+`mobile/` is a dependency-free web companion with deliberate Paste, local draft
+recovery, retained originals, tags, search and the existing private handoff format.
+Its Android Share Target handler commits locally before redirecting and never
+forwards a failed share to a server. Phone installation requires a trusted HTTPS
+origin, an active service worker and adding the app to the home screen. It is a
+staged web client, not an installed Expo app or released APK.
+
+For a developer preview, serve this folder through a local static server. Use a
+separate preview port/origin, keep it loopback-only, and use synthetic content:
+
+```powershell
+py -3 -m http.server 8789 --bind 127.0.0.1 --directory mobile
+```
+
+Stop that preview server after review. An Android phone cannot use a laptop's
+127.0.0.1 address. A dedicated trusted HTTPS origin and real phone acceptance are
+release work; do not expose the authenticated desktop API or tunnel its token.
+
+The web beta stores plaintext in this browser's IndexedDB, not in the Windows
+database. Committed drafts recover after storage is reopened. Storage can be
+cleared or evicted, so export another copy. The browser archive supports 2,000
+originals / 10 MB; its transfer files retain the desktop 450 KB / 999-original
+bound. Search can narrow a transfer. A failed save retains the draft. Nothing is
+automatically deleted. Conflicting originals or vibes refuse the entire import.
+
+Normal Android apps cannot silently read every background copy on Android 10+.
+Expo does not remove that OS restriction. The native direction is Expo with
+deliberate Share/Paste, encrypted local SQLite and approved device sync; a custom
+default keyboard is a separate product decision.
+[Android clipboard restrictions](https://developer.android.com/about/versions/10/privacy/changes#clipboard-data),
+[architecture and implementation record](docs/Mobile-and-multi-machine-Codex-2026-11-01-v1.md).
 
 ## Commands
 

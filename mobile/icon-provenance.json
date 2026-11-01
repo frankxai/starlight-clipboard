@@ -1,0 +1,16 @@
+{
+  "author": "Codex",
+  "created": "2026-11-01",
+  "revision": 1,
+  "reviewState": "reused existing Starlight asset; not newly generated",
+  "sourceRepository": "frankxai/starlightintelligence.ai",
+  "sourceRevision": "28810872d895b03e9d763aedafada718f26c2caf",
+  "sourcePath": "apps/desktop/src-tauri/icons/icon.png",
+  "sha256": "5e5a8d2c39ecbd2f8f17f95ec19e28a20c5eaf65fe2b95e05e9c07db78b8b8f0",
+  "upstreamProvenance": {
+    "derivedFrom": "public/brand/starlight-star-on-ink.svg",
+    "method": "deterministic raster export with `tauri icon` (@tauri-apps/cli 2.12.4); no image generation model",
+    "sourceProvenance": "public/brand/starlight-star-on-ink.svg.vis.provenance.json",
+    "regenerate": "pnpm exec tauri icon ../../public/brand/starlight-star-on-ink.svg -o src-tauri/icons (then remove the android, ios and Square*/StoreLogo outputs)"
+  }
+}
