@@ -1,0 +1,10 @@
+{
+  "name": "starlight-clipboard-cloud",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=22.18"},
+  "scripts": {"test": "node --test ../tests/cloud.test.mjs ../tests/cloud-package.test.mjs"},
+  "dependencies": {"jose": "6.2.15"},
+  "devDependencies": {"esbuild": "0.28.2"}
+}

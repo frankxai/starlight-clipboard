@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#070a10">
+  <meta name="color-scheme" content="dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
+  <meta name="referrer" content="no-referrer">
+  <title>Starlight · Pocket library</title>
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icon.png">
+  <link rel="stylesheet" href="./style.css">
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#capture">Go to capture</a>
+  <div class="workspace">
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="Starlight pocket library"><img src="./icon.png" alt="" width="38" height="38"><span>Starlight<span class="brand-caption">Pocket library</span></span></a>
+      <button id="connection" class="quiet" aria-controls="connection-dialog">This device <span class="signal" aria-hidden="true"></span></button>
+    </header>
+    <main>
+      <section class="capture" id="capture" aria-labelledby="capture-title">
+        <div class="intro"><h1 id="capture-title">An idea worth keeping.</h1><p>Prompts, passing thoughts, the words you want to return to.</p></div>
+        <form id="capture-form">
+          <div class="composer">
+            <label for="body" class="sr-only">Idea or prompt</label>
+            <textarea id="body" rows="5" maxlength="100000" placeholder="What would you like to keep?" enterkeyhint="enter" spellcheck="true"></textarea>
+            <div class="composer-footer"><span id="draft-status" role="status">Stored here when you save.</span><button id="paste" type="button" class="quiet">Paste clipboard</button></div>
+          </div>
+          <div class="capture-options">
+            <label>Save as<select id="category"><option value="idea">Idea</option><option value="prompt">Prompt</option><option value="suno">Suno direction</option></select></label>
+            <label class="tag-field">Tags<input id="tags" placeholder="piano, intimate" maxlength="800" autocapitalize="none" enterkeyhint="done"></label>
+            <button id="save" class="primary" type="submit" disabled>Keep on this device</button>
+          </div>
+        </form>
+        <p id="message" class="notice" role="status" aria-live="polite">Local library. No account or AI call is needed.</p>
+      </section>
+      <section class="library" aria-labelledby="library-title">
+        <div class="section-heading"><div><h2 id="library-title">Your collection</h2><p id="result-count">Opening local library…</p></div><button id="transfer" class="quiet" aria-controls="transfer-dialog">Move library</button></div>
+        <div class="filters">
+          <label class="search"><span class="sr-only">Search originals or tags</span><input id="search" type="search" placeholder="Find a thought, prompt or tag" enterkeyhint="search"></label>
+          <label class="date"><span class="sr-only">Captured on local date</span><input id="date" type="date" aria-label="Captured on local date"></label>
+        </div>
+        <div class="tabs" role="group" aria-label="Library type"><button data-kind="all" aria-pressed="true">Everything</button><button data-kind="suno" aria-pressed="false">Suno</button><button data-kind="prompts" aria-pressed="false">Prompts</button><button data-kind="ideas" aria-pressed="false">Ideas</button></div>
+        <ul id="items" class="items" aria-label="Retained originals"></ul>
+        <div id="empty" class="empty" hidden><span class="empty-mark" aria-hidden="true"></span><h3 id="empty-title">A little space for your next idea.</h3><p id="empty-copy">Paste a prompt or write something above. It will stay in this browser until you export or clear its data.</p></div>
+        <button id="retry" class="quiet" hidden>Retry local storage</button>
+      </section>
+    </main>
+    <aside class="side-note" aria-labelledby="carry-title"><div class="orbit" aria-hidden="true"></div><h2 id="carry-title">A thought can travel.</h2><p>Capture on your phone. Export a private handoff. Import it into Starlight Clipboard on either laptop.</p><p class="muted">This is manual transfer. Account sync and automatic background capture are not connected.</p><button id="how" class="quiet">How the devices connect</button></aside>
+    <footer class="footer"><span id="offline-state">Checking offline availability</span><span>Mobile preview · Originals stay local</span></footer>
+  </div>
+  <dialog id="reader-dialog" aria-labelledby="reader-title"><div class="dialog-top"><h2 id="reader-title">Retained original</h2><button data-close="reader-dialog" class="quiet" aria-label="Close original">Close</button></div><p id="reader-meta" class="muted"></p><pre id="reader-body"></pre><div id="reader-tags" class="reader-tags"></div><button id="copy-original" class="primary">Copy original</button><p id="reader-status" role="status"></p></dialog>
+  <dialog id="transfer-dialog" aria-labelledby="transfer-title"><div class="dialog-top"><h2 id="transfer-title">Carry your library</h2><button data-close="transfer-dialog" class="quiet">Close</button></div><p>Export the current filtered selection, then import it through <strong>Move library</strong> on desktop. Existing originals keep their identities and dates.</p><p class="privacy">Handoff files contain private, unencrypted text. Use a trusted encrypted transfer channel.</p><button id="export" class="primary">Export matching originals</button><hr><label class="file-label">Import a Starlight handoff<input id="import-file" type="file" accept="application/json,.json"></label><p id="import-preview">Choose a file to validate before importing.</p><button id="apply-import" class="primary" disabled>Import into this device</button><p id="transfer-status" role="status"></p></dialog>
+  <dialog id="connection-dialog" aria-labelledby="connection-title"><div class="dialog-top"><h2 id="connection-title">Your devices, your library</h2><button data-close="connection-dialog" class="quiet">Close</button></div><ol class="connection-list"><li><strong>This phone</strong><span>Paste or share deliberately. Captures and committed drafts stay in this browser.</span></li><li><strong>Your Windows PCs</strong><span>The installed collector archives local copies. The optional history bridge also checks eligible Windows history items.</span></li><li><strong>Microsoft transport</strong><span>SwiftKey can sync the latest Android text clip to Windows. It retains one cloud clip for about an hour and needs the same personal Microsoft account.</span></li><li><strong>Starlight memory</strong><span>Use Remember on desktop to file selected notes. Capturing does not automatically publish to shared memory.</span></li></ol><p>Android 10+ blocks ordinary apps from reading every background copy. Installing a normal Expo app does not remove that restriction.</p><p class="muted">The Android share target needs this app installed from a trusted HTTPS origin. This preview has no account login, automatic sync or cloud inference.</p><button id="persist" class="quiet">Request persistent local storage</button><p id="storage-state" role="status">Browser storage can be cleared or evicted. Export a second copy.</p></dialog>
+</body>
+</html>

@@ -1,0 +1,6 @@
+{
+  "name": "@starlight/clipboard-mobile",
+  "private": true,
+  "type": "module",
+  "description": "Dependency-free offline Clipboard companion and portable handoff domain."
+}

@@ -1,0 +1,25 @@
+{
+  "schema": "starlight.clipboard-companion.v1",
+  "id": "clipboard",
+  "name": "Starlight Clipboard and Music",
+  "source": "https://github.com/frankxai/starlight-clipboard",
+  "author": "Codex",
+  "created": "2026-10-31",
+  "revision": "v1",
+  "reviewState": "local-beta-contract-reference",
+  "entrypoints": {"library": ["clips", "board"], "music": ["clips", "music"]},
+  "companion": {
+    "binding": "%USERPROFILE%/.starlight/clipboard-index/data/panel.json",
+    "transport": "authenticated-http-loopback",
+    "health": "/api/health",
+    "open": "/api/raise",
+    "authentication": "per-run bearer from the private runtime binding; never export it"
+  },
+  "agentInterface": {
+    "command": "clips library",
+    "operations": ["list", "create", "tag", "assign", "unassign", "suggest", "export", "import"],
+    "tagProvenance": ["user", "agent", "local-rule"]
+  },
+  "privacy": {"rawCloudProcessing": false, "automaticUploads": false, "accountSync": "not-configured", "handoff": "private-unencrypted-file"},
+  "note": "Integration reference only. Nexus already has the fixed clipboard identity; this file is not an execution registry."
+}

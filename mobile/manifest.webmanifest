@@ -1,0 +1,13 @@
+{
+  "id":"./",
+  "name":"Starlight Clipboard",
+  "short_name":"Starlight",
+  "description":"Keep ideas and prompts locally, then carry a private library handoff to desktop.",
+  "start_url":"./",
+  "scope":"./",
+  "display":"standalone",
+  "background_color":"#070a10",
+  "theme_color":"#070a10",
+  "icons":[{"src":"./icon.png","sizes":"512x512","type":"image/png","purpose":"any"}],
+  "share_target":{"action":"./share","method":"POST","enctype":"application/x-www-form-urlencoded","params":{"title":"title","text":"text","url":"url"}}
+}
