@@ -1,0 +1,16 @@
+{
+  "schema": "starlight.clipboard-cloud-candidate.v1",
+  "author": "Codex",
+  "created": "2026-11-02",
+  "revision": 1,
+  "script_name": "starlight-clipboard-companion",
+  "compatibility_date": "2026-11-02",
+  "gateway": "starlight-agent-lab",
+  "release_state": "candidate-not-deployed",
+  "public_routes": false,
+  "new_storage": [],
+  "automatic_uploads": false,
+  "inference_enabled": false,
+  "access_audience": "requires-existing-organization-app-approval",
+  "notes": "API upload artifact, not a cf or Wrangler project configuration. No secret values. Version upload and traffic activation are separate operations."
+}

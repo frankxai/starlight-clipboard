@@ -224,6 +224,12 @@ The installed Context7 and capability inventories remain owned by their existing
 
 ## Verification
 
+The optional [Cloudflare delivery/classification candidate](cloud/README.md) provides
+a Worker for serving the existing mobile source behind Access and selected Clef requests through
+the existing Starlight gateway. It has no automatic uploads, hosted archive or account
+sync and has not been deployed. Inference is disabled in the packaged metadata. Activation, funding and native
+phone/runtime acceptance are tracked in [the current execution plan](docs/Cloudflare-execution-Codex-2026-11-02-v1.md).
+
 ```powershell
 py -3 -m unittest discover -s tests -v
 py -3 clip.py self-test
