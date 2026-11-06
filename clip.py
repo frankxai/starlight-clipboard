@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import uuid
+import clip_autostart
 import clip_store
 import clip_integrations
 import clip_library
@@ -2931,6 +2932,11 @@ def pump_hotkey(hwnd: int) -> None:
 def board(view: str = "") -> int:
     target = int(user32.GetForegroundWindow() or 0)
     state = panel_file()
+    try:
+        clip_autostart.ensure_collector(state, watcher_running, Path(__file__).resolve())
+    except (clip_autostart.CollectorStartError, OSError) as error:
+        emit(f"Clipboard collector is stopped and could not be started: {error}")
+        return 1
     if state.is_file() and watcher_running():
         try:
             saved = json.loads(state.read_text(encoding="utf-8"))

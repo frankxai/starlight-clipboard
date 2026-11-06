@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/frankxai/starlight-clipboard/shared/clip-item.schema.json",
+  "title": "Starlight Clipboard shared shapes",
+  "description": "Derived from the SQLite columns created in clip.py init_db() and clip_store.migrate(), and from the /api/items, /api/detail and /api/library responses. clip.py is the source of truth.",
+  "$defs": {
+    "ClipRow": {
+      "description": "One row of the SQLite `clips` table. `body` may be null for images; protected or redacted bodies are stored as the collector returns them.",
+      "type": "object",
+      "required": ["id", "captured_at", "last_seen_at", "kind", "sha256", "char_len", "hit_count", "pinned", "preview"],
+      "properties": {
+        "id": {"type": "integer"},
+        "captured_at": {"type": "string"},
+        "last_seen_at": {"type": "string"},
+        "kind": {"$ref": "#/$defs/Kind"},
+        "source_app": {"type": ["string", "null"]},
+        "source_title": {"type": ["string", "null"]},
+        "sha256": {"type": "string"},
+        "char_len": {"type": "integer"},
+        "hit_count": {"type": "integer", "default": 1},
+        "pinned": {"type": "integer", "default": 0},
+        "preview": {"type": "string"},
+        "body": {"type": ["string", "null"]},
+        "sidecar": {"type": ["string", "null"]},
+        "extra_json": {"type": ["string", "null"]},
+        "device": {"type": ["string", "null"]},
+        "uid": {"type": ["string", "null"], "description": "Store-id-prefixed stable identity added by clip_store.migrate()."},
+        "use_case": {"type": "string", "default": ""},
+        "state": {"$ref": "#/$defs/State"}
+      },
+      "additionalProperties": false
+    },
+    "Kind": {
+      "description": "Values returned by classify_text() plus 'image', 'secret' and 'files' assigned during ingest.",
+      "enum": ["text", "url", "path", "command", "prompt", "code", "image", "secret", "files"]
+    },
+    "State": {"enum": ["active", "saved", "resolved", "archived"]},
+    "ClipItem": {
+      "description": "One entry of `items` in the GET /api/items response (board_items() in clip.py). `body` is truncated to 400 characters; `more` says whether the original is longer.",
+      "type": "object",
+      "required": ["id", "kind", "preview", "body", "more", "state", "use_case", "copies", "captured_at", "last_seen_at", "app", "title", "device", "pinned", "book", "stored", "reason", "image"],
+      "properties": {
+        "id": {"type": "integer"},
+        "kind": {"$ref": "#/$defs/Kind"},
+        "preview": {"type": "string"},
+        "body": {"type": "string", "maxLength": 400},
+        "more": {"type": "boolean"},
+        "state": {"$ref": "#/$defs/State"},
+        "use_case": {"type": "string"},
+        "copies": {"type": "integer", "description": "hit_count"},
+        "captured_at": {"type": "string"},
+        "last_seen_at": {"type": "string"},
+        "app": {"type": "string"},
+        "title": {"type": "string"},
+        "device": {"type": "string"},
+        "pinned": {"type": "integer"},
+        "book": {"type": "boolean", "description": "state == 'saved'"},
+        "stored": {"type": "boolean"},
+        "reason": {"type": "string"},
+        "image": {"type": "boolean"},
+        "incomplete": {"type": "boolean", "description": "Present only when extra_json parsed; true when the original was truncated at capture."}
+      },
+      "additionalProperties": false
+    },
+    "ItemsResponse": {
+      "description": "GET /api/items?q=",
+      "type": "object",
+      "required": ["device", "devices", "items"],
+      "properties": {
+        "device": {"type": "string"},
+        "devices": {"type": "array", "items": {"type": "string"}},
+        "items": {"type": "array", "items": {"$ref": "#/$defs/ClipItem"}}
+      },
+      "additionalProperties": false
+    },
+    "DetailResponse": {
+      "description": "GET /api/detail?id= (200). 404 returns {error}.",
+      "type": "object",
+      "required": ["id", "body", "state"],
+      "properties": {
+        "id": {"type": "integer"},
+        "body": {"type": "string"},
+        "state": {"$ref": "#/$defs/State"}
+      },
+      "additionalProperties": false
+    },
+    "Prompt": {
+      "description": "A ClipItem whose kind is 'prompt'. Not a separate table; use_case 'suno' is a suggestion, not proof of submission.",
+      "allOf": [
+        {"$ref": "#/$defs/ClipItem"},
+        {"properties": {"kind": {"const": "prompt"}}}
+      ]
+    },
+    "Combo": {
+      "description": "A library collection (table library_collections, clip_library.snapshot()). Manual collections hold members; smart ones run `query`. Count fields are added by snapshot().",
+      "type": "object",
+      "required": ["id", "name", "description", "mode", "query", "version", "updated_at", "count", "contains", "count_bounded"],
+      "properties": {
+        "id": {"type": "string"},
+        "name": {"type": "string"},
+        "description": {"type": "string"},
+        "mode": {"enum": ["manual", "smart"]},
+        "query": {"type": "string"},
+        "version": {"type": "integer"},
+        "updated_at": {"type": "string"},
+        "count": {"type": "integer"},
+        "contains": {"type": "boolean"},
+        "count_bounded": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "LibraryTag": {
+      "type": "object",
+      "required": ["label", "source", "reason"],
+      "properties": {
+        "label": {"type": "string"},
+        "source": {"enum": ["user", "agent", "local-rule"]},
+        "reason": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "LibraryResponse": {
+      "description": "GET /api/library[?id=]. `tags` is non-empty only when `id` is given.",
+      "type": "object",
+      "required": ["collections", "tags", "sync", "cloud_processing"],
+      "properties": {
+        "collections": {"type": "array", "items": {"$ref": "#/$defs/Combo"}},
+        "tags": {"type": "array", "items": {"$ref": "#/$defs/LibraryTag"}},
+        "sync": {"const": "local-only"},
+        "cloud_processing": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "AddResponse": {
+      "description": "POST /api/add {text}",
+      "type": "object",
+      "required": ["ok", "id"],
+      "properties": {"ok": {"type": "boolean"}, "id": {"type": ["integer", "null"]}},
+      "additionalProperties": false
+    },
+    "CopyResponse": {
+      "description": "POST /api/copy {id}",
+      "type": "object",
+      "required": ["ok"],
+      "properties": {"ok": {"type": "boolean"}},
+      "additionalProperties": false
+    }
+  },
+  "anyOf": [
+    {"$ref": "#/$defs/ClipItem"},
+    {"$ref": "#/$defs/Combo"},
+    {"$ref": "#/$defs/Prompt"}
+  ]
+}

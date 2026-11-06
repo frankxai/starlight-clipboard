@@ -2,7 +2,7 @@
 
 A private Windows clipboard archive with a shortcut palette and searchable prompt library. It listens beside Windows clipboard history and keeps Win+V available.
 
-Open **Starlight Clipboard** from the Start menu, or press **Ctrl+Alt+V** while capture is running. Starlight retains originals locally and makes no cloud inference or publishing requests. Microsoft clipboard sync is a separate Windows setting.
+Open **Starlight Clipboard** from the Start menu (it starts the collector if stopped), or press **Ctrl+Alt+V** while capture is running. Starlight retains originals locally and makes no cloud inference or publishing requests. Microsoft clipboard sync is a separate Windows setting.
 
 Open **Starlight Music** from the same Start-menu folder, or run `clips music`, for the music workspace. Both entry points use the same collector and retained originals.
 
@@ -155,6 +155,7 @@ default keyboard is a separate product decision.
 | Command | Purpose |
 | --- | --- |
 | `clips` | Show recent captures |
+| `sclip` | Thin alias of `clips` (`sclip.cmd` runs the same `clip.py`); no second CLI |
 | `clips search use:suno piano` | Search content and metadata |
 | `clips add "An idea to keep"` | Save an idea explicitly |
 | `clips prompts` | List prompt candidates |

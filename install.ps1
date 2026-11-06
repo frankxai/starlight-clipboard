@@ -16,7 +16,7 @@ $python = (& py -3 -c 'import sys; print(sys.executable)').Trim()
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $python)) { throw 'Python 3 is required.' }
 $pythonw = Join-Path (Split-Path $python) 'pythonw.exe'
 if (-not (Test-Path -LiteralPath $pythonw)) { throw 'The matching pythonw.exe is missing.' }
-$files = @('clip.py', 'clip_store.py', 'clip_integrations.py', 'clip_library.py', 'clip_history.py', 'windows_history.ps1', 'board.html', 'library.js', 'README.md')
+$files = @('clip.py', 'clip_store.py', 'clip_integrations.py', 'clip_library.py', 'clip_history.py', 'clip_autostart.py', 'windows_history.ps1', 'board.html', 'library.js', 'README.md')
 $hashes = [ordered]@{}
 foreach ($file in $files) {
     $hashes[$file] = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $PSScriptRoot $file)).Hash.ToLower()
@@ -118,13 +118,15 @@ sh.Run """" & "$pythonw" & """ """ & "$(Join-Path $release 'clip.py')" & """ " &
 $wsh = New-Object -ComObject WScript.Shell
 $programs = Join-Path ([Environment]::GetFolderPath('Programs')) 'Starlight'
 New-Item -ItemType Directory -Path $programs -Force | Out-Null
-foreach ($entry in @(@('Starlight Clipboard','board'),@('Starlight Music','music'),@('Start Clipboard capture','watch'))) {
+foreach ($entry in @(@('Starlight Clipboard','board'),@('Starlight Music','music'))) {
     $shortcut = $wsh.CreateShortcut((Join-Path $programs ($entry[0]+'.lnk')))
     $shortcut.TargetPath = Join-Path $env:WINDIR 'System32/wscript.exe'
     $shortcut.Arguments = '"' + $startScript + '" ' + $entry[1]
     $shortcut.WorkingDirectory = $resolvedRoot
     $shortcut.Save()
 }
+$legacyCapture = Join-Path $programs 'Start Clipboard capture.lnk'
+if (Test-Path -LiteralPath $legacyCapture -PathType Leaf) { Remove-Item -LiteralPath $legacyCapture }
 $startup = Join-Path ([Environment]::GetFolderPath('Startup')) 'Starlight Clipboard.lnk'
 if ($EnableStartup) {
     $shortcut = $wsh.CreateShortcut($startup)

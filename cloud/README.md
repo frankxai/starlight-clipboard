@@ -112,3 +112,21 @@ Sources retrieved 2026-11-02:
 [Clef](https://developers.cloudflare.com/workers-ai/models/clef/),
 [AI Gateway bindings](https://developers.cloudflare.com/ai-gateway/usage/worker-binding-methods/),
 [Worker version upload](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/versions/methods/create/).
+
+## Staged agent-layer storage (not live)
+
+Nothing below exists in any Cloudflare account. No resource was created, no
+Wrangler config was added and nothing deploys or uploads automatically. Clipboard
+bodies can hold secrets, so what syncs is the owner's decision, made per item.
+
+- **D1**: `cloud/migrations/0001_clip_mirror.sql` mirrors `shared/clip-item.schema.json`
+  (metadata only: clips without `body`, collections, members, tags). It keys on the
+  portable `uid`, not the local integer `id`. Not applied.
+- **R2** (staged binding `CLIP_BLOBS`): optional home for owner-approved bodies or
+  images, only after an explicit per-item opt-in and client-side encryption decision.
+- **Vectorize** (staged binding `CLIP_VECTORS`): embeddings of owner-approved previews
+  only; never of items with `kind: "secret"`.
+- **Workers AI** (staged binding `AI`): inference stays disabled; see the existing
+  classification gating above.
+
+Open decisions are listed in the draft PR that introduced this section.
