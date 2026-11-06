@@ -125,6 +125,8 @@ foreach ($entry in @(@('Starlight Clipboard','board'),@('Starlight Music','music
     $shortcut.WorkingDirectory = $resolvedRoot
     $shortcut.Save()
 }
+$legacyCapture = Join-Path $programs 'Start Clipboard capture.lnk'
+if (Test-Path -LiteralPath $legacyCapture -PathType Leaf) { Remove-Item -LiteralPath $legacyCapture }
 $startup = Join-Path ([Environment]::GetFolderPath('Startup')) 'Starlight Clipboard.lnk'
 if ($EnableStartup) {
     $shortcut = $wsh.CreateShortcut($startup)

@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS clips (
   uid TEXT PRIMARY KEY,
   captured_at TEXT NOT NULL,
   last_seen_at TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('text','url','path','command','prompt','code','image','secret')),
+  kind TEXT NOT NULL CHECK (kind IN ('text','url','path','command','prompt','code','image','secret','files')),
   source_app TEXT,
   source_title TEXT,
   sha256 TEXT NOT NULL,

@@ -33,6 +33,7 @@ before(async () => {
     if (req.headers.authorization !== `Bearer ${TOKEN}`) return send(404, { error: "no" });
     const url = new URL(req.url ?? "/", "http://x");
     if (url.pathname === "/api/items") return send(200, ITEMS);
+    if (url.pathname === "/api/detail" && url.searchParams.get("id") === "307") { res.writeHead(307, { Location: "http://example.invalid/steal" }); return res.end(); }
     if (url.pathname === "/api/detail") return url.searchParams.get("id") === "2" ? send(200, { id: 2, body: "two", state: "active" }) : send(404, { error: "Copy not found." });
     if (url.pathname === "/api/library") return send(200, { collections: [{ id: "midnight-piano" }], tags: [], sync: "local-only", cloud_processing: false });
     if (url.pathname === "/api/add") return send(200, { ok: true, id: 9 });
@@ -115,4 +116,10 @@ test("clear error when panel file is stale (nothing listening)", async () => {
   assert.equal(r.isError, true);
   assert.match(text(r), /not running or not reachable/);
   await rm(stale, { recursive: true, force: true });
+});
+
+test("redirects from the collector port are refused, not followed", async () => {
+  const r = await (await connect(home)).callTool({ name: "clip_get", arguments: { id: 307 } });
+  assert.equal(r.isError, true);
+  assert.match(text(r), /not running or not reachable/);
 });

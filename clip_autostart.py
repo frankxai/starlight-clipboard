@@ -27,23 +27,30 @@ def spawn_detached(script: Path) -> None:
                      stderr=subprocess.DEVNULL, close_fds=True, creationflags=flags)
 
 
+def _snapshot(panel: Path):
+    """Identity of the published endpoint: the file bytes (port + random token) and mtime."""
+    try:
+        return panel.read_bytes(), panel.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
 def ensure_collector(panel: Path, running: Callable[[], bool], script: Path, *, spawn: Callable[[Path], None] = spawn_detached,
                      timeout: float = 10.0, interval: float = 0.25, clock: Callable[[], float] = time.time,
                      sleep: Callable[[float], None] = time.sleep) -> bool:
     """Return True if the collector was already running, False if started now; raise if it never came up.
 
-    A leftover panel.json from an earlier run does not count: it must be rewritten after the spawn.
+    A leftover panel.json from an earlier run does not count: its content must change after the spawn,
+    however recently it was written (the new collector publishes a new port and random token).
     """
     if running() and panel.is_file():
         return True
     started = clock()
+    before = _snapshot(panel)
     spawn(script)
     while clock() - started < timeout:
-        try:
-            fresh = panel.is_file() and panel.stat().st_mtime >= started - 1
-        except OSError:
-            fresh = False
-        if fresh and running():
+        current = _snapshot(panel)
+        if current is not None and current != before and running():
             return False
         sleep(interval)
     raise CollectorStartError(f"Started the collector but {panel.name} did not appear within {timeout:g} seconds.")

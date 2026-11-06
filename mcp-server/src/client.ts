@@ -49,6 +49,7 @@ export class Collector {
           ...(body === undefined ? {} : { "Content-Type": "application/json" }),
         },
         body: body === undefined ? undefined : JSON.stringify(body),
+        redirect: "error", // never follow a redirect off the collector, even if a stale port is reused
         signal: AbortSignal.timeout(12_000),
       });
     } catch {

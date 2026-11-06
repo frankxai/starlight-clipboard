@@ -43,7 +43,7 @@ class EnsureCollector(unittest.TestCase):
 
         def spawn(script):
             state["up"] = True
-            self.panel.write_text("{}")
+            self.panel.write_text('{"port": 2}')
             os.utime(self.panel, (self.clock.now + 1, self.clock.now + 1))
 
         spawn = MagicMock(side_effect=spawn)
@@ -58,6 +58,12 @@ class EnsureCollector(unittest.TestCase):
             self.run_ensure(lambda: False, spawn)
         spawn.assert_called_once()
         self.assertGreaterEqual(self.clock.now - 1000.0, 10.0)
+
+    def test_recent_but_unchanged_panel_does_not_count(self):
+        self.panel.write_text("{}")  # written "just now": mtime is current, content never changes
+        os.utime(self.panel, (self.clock.now, self.clock.now))
+        with self.assertRaises(auto.CollectorStartError):
+            self.run_ensure(lambda: False, MagicMock())
 
     def test_spawn_detached_uses_popen_with_devnull(self):
         with patch.object(auto.subprocess, "Popen") as popen:
